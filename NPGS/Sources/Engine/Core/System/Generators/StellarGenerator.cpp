@@ -104,7 +104,7 @@ namespace
 // ---------------------------------
 FStellarGenerator::FStellarGenerator(const FStellarGenerationInfo& GenerationInfo)
     :
-    _RandomEngine(*GenerationInfo.SeedSequence),
+    _RandomEngine(Util::MakeRandomEngine(*GenerationInfo.SeedSequence)),
     _MagneticGenerators
     {
         Util::TUniformRealDistribution<>(std::log10(500.0f), std::log10(3000.0f)),

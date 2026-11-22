@@ -1,11 +1,73 @@
-// VulkanUIRenderer.cpp - 修正字体上传部分
 #include "VulkanUIRenderer.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
+#include "Engine/Core/System/UI/SystemFonts.h"
 #include "Engine/Core/System/UI/ui_framework.h"
 #include "Engine/Utils/Logger.h"
 
 _NPGS_BEGIN
 _RUNTIME_BEGIN
 _GRAPHICS_BEGIN
+
+namespace
+{
+System::UI::FUIFontTextureLimits GetUIFontAtlasLimits(vk::PhysicalDevice Device, std::uint32_t MaxImageDimension2D)
+{
+    // Match the official Vulkan backend's dynamic texture configuration.
+    VkImageFormatProperties FormatProperties{};
+    const VkResult Result = vkGetPhysicalDeviceImageFormatProperties(
+        static_cast<VkPhysicalDevice>(Device), VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, &FormatProperties);
+    if (Result != VK_SUCCESS)
+        throw std::runtime_error("Cannot query ImGui RGBA8_UNORM sampled/transfer-destination atlas limits: VkResult " +
+                                 std::to_string(static_cast<int>(Result)));
+    if (!(FormatProperties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) ||
+        FormatProperties.maxExtent.depth < 1 || FormatProperties.maxMipLevels < 1 ||
+        FormatProperties.maxArrayLayers < 1)
+        throw std::runtime_error("Device does not support the ImGui RGBA8_UNORM font atlas image configuration");
+    return {
+        std::min(MaxImageDimension2D, FormatProperties.maxExtent.width),
+        std::min(MaxImageDimension2D, FormatProperties.maxExtent.height),
+        FormatProperties.maxResourceSize
+    };
+}
+
+void LoadUIFonts()
+{
+    ImGuiIO& IO = ImGui::GetIO();
+    const auto TranslationPath = Asset::GetAssetPath("Lang/translations.json");
+    std::ifstream TranslationFile(TranslationPath, std::ios::binary);
+    if (!TranslationFile)
+        throw std::runtime_error("Cannot read UI translations for font coverage: " + TranslationPath);
+    const std::string Translations{std::istreambuf_iterator<char>(TranslationFile), {}};
+    const auto Fonts = System::UI::FindSystemUIFonts(nullptr, Translations);
+    for (const auto& Face : Fonts.Faces)
+        NpgsCoreInfo("UI font source: {} (face {})", Face.Path, Face.FaceIndex);
+    if (!Fonts.MissingCharacters.empty())
+        std::cerr << "NPGS UI: system fonts lack " << Fonts.MissingCharacters.size()
+                  << " requested Chinese/UI characters. Install Noto Sans CJK / Source Han Sans "
+                     "and system symbol fonts, or set NPGS_FONT to an absolute font path.\n";
+    auto LoadFont = [&](float Size) { return System::UI::AddSystemUIFont(*IO.Fonts, Fonts, Size); };
+
+    auto& UI = System::UI::UIContext::Get();
+    UI.m_font_regular = LoadFont(UI.FontSizeRegular);
+    UI.m_font_bold = LoadFont(UI.FontSizeBold);
+    UI.m_font_large = LoadFont(UI.FontSizeLarge);
+    UI.m_font_small = LoadFont(UI.FontSizeSmall);
+    UI.m_font_subtitle = LoadFont(UI.FontSizeSubtitle);
+    IO.FontDefault = UI.m_font_regular;
+    ImGui::GetStyle().FontSizeBase = UI.FontSizeRegular;
+}
+}
 
 FVulkanUIRenderer::FVulkanUIRenderer()
     : _context(FVulkanContext::GetClassInstance())
@@ -19,193 +81,102 @@ FVulkanUIRenderer::~FVulkanUIRenderer()
 bool FVulkanUIRenderer::Initialize(GLFWwindow* window)
 {
     if (_initialized) return true;
+    if (!window)
+        throw std::invalid_argument("UI initialization requires a GLFW window");
 
-    using namespace Npgs::System::UI; // 确保能访问到 UIContext
-
-    // 1. 创建描述符池
-    CreateDescriptorPool();
-
-    // 2. 设置 ImGui 上下文
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
-
-    // 设置 ImGui 样式
-    ImGui::StyleColorsDark();
-
-    // ================= [字体加载核心修改 START] =================
-     // --- A. 定义字体文件路径 ---
-    // 请确保这些文件真实存在于你的 Assets/Fonts/ 目录下
-    const char* enFontPath = "Assets/Fonts/Anonymous-Pro-B-1.ttf"; // 英文 (基础)
-    const char* cnFontPath = "Assets/Fonts/msyhbd.ttc";              // 中文 (微软雅黑)
-    const char* symFontPath = "Assets/Fonts/seguisym.ttf";          // 符号 (Segoe UI Symbol)
-
-    // --- B. 定义特殊符号的字形范围 ---
-    // 覆盖: 标点, 箭头, 数学符号, 技术符号, 圈号字符, 制表符, 方块元素, 几何图形, 杂项符号
-    static const ImWchar symbolRanges[] = {
-        0x2000, 0x206F, // General Punctuation (常用标点)
-        0x2190, 0x21FF, // Arrows (箭头) -> ← ↑ ↓
-        0x2200, 0x22FF, // Mathematical Operators (数学运算) ∀ ∂ ∈
-        0x2300, 0x23FF, // Misc Technical (技术符号) ⌘ ⌚
-        0x2460, 0x24FF, // Enclosed Alphanumerics (带圈字符) ① ⓐ
-        0x2500, 0x257F, // Box Drawing (制表符) ┌ ┐ └ ┘
-
-        0x2580, 0x259F, // Block Elements (方块) █ ▓ ▒ (常用于进度条)
-        0x25A0, 0x25FF, // Geometric Shapes (几何图形) ◈ ◆ ● ■ (你的痛点在这里)
-        0x2600, 0x26FF, // Misc Symbols (杂项) ☀ ☁ ☢ ☠ ☭ ☮ (科幻图标)
-        0               // [重要] 数组必须以 0 结尾
-    };
-
-    // --- C. 定义加载辅助 Lambda ---
-    auto LoadFontWithChinese = [&](float size, const char* fontName) -> ImFont*
+    try
     {
-        ImFontConfig config;
-        config.PixelSnapH = true; // 像素对齐，防止字体模糊
-        // 1. 加载英文字体 (Base)
-        ImFont* font = io.Fonts->AddFontFromFileTTF(
-            enFontPath,
-            size,
-            nullptr,
-            io.Fonts->GetGlyphRangesDefault()
-        );
+        CreateDescriptorPool();
+        IMGUI_CHECKVERSION();
+        _imguiContext = ImGui::CreateContext();
+        ImGuiIO& IO = ImGui::GetIO();
+        IO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        // Wayland cannot position platform windows. Keep docking and the full
+        // application UI in the main GLFW window, on every platform.
+        IO.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+        // This UI owns its layout. Do not read/write imgui.ini relative to cwd.
+        IO.IniFilename = nullptr;
+        ImGui::StyleColorsDark();
+        _fontTextureLimits = GetUIFontAtlasLimits(
+            _context->GetPhysicalDevice(), _context->GetPhysicalDeviceProperties().limits.maxImageDimension2D);
+        System::UI::ConfigureUIFontTextures(_fontTextureLimits);
+        LoadUIFonts();
 
-        if (font == nullptr)
+        if (!ImGui_ImplGlfw_InitForVulkan(window, true))
+            throw std::runtime_error("Failed to initialize ImGui GLFW backend");
+        _glfwInitialized = true;
+
+        _imageCount = _context->GetSwapchainImageCount();
+        ImGui_ImplVulkan_InitInfo Info{};
+        Info.ApiVersion = VK_API_VERSION_1_4;
+        Info.Instance = _context->GetInstance();
+        Info.PhysicalDevice = _context->GetPhysicalDevice();
+        Info.Device = _context->GetDevice();
+        Info.QueueFamily = _context->GetGraphicsQueueFamilyIndex();
+        Info.Queue = _context->GetGraphicsQueue();
+        Info.DescriptorPool = _descriptorPool;
+        _colorAttachmentFormat = static_cast<VkFormat>(_context->GetSwapchainCreateInfo().imageFormat);
+        Info.UseDynamicRendering = true;
+        Info.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        Info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        // The backend retains this pointer beyond Init(), so use member storage.
+        Info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &_colorAttachmentFormat;
+        Info.MinImageCount = std::max(2u, _imageCount);
+        Info.ImageCount = _imageCount;
+        Info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        Info.CheckVkResultFn = [](VkResult Result)
         {
-            NpgsCoreError("Failed to load base font: {} (Size: {}). Check Path!", fontName, size);
-            return io.Fonts->AddFontDefault(); // 失败回退
-        }
+            if (Result < VK_SUCCESS)
+                throw std::runtime_error("ImGui Vulkan backend failed with VkResult " +
+                                         std::to_string(static_cast<int>(Result)));
+        };
+        if (_imageCount < 2)
+            throw std::runtime_error("ImGui Vulkan backend requires at least two swapchain images");
+        if (!ImGui_ImplVulkan_Init(&Info))
+            throw std::runtime_error("Failed to initialize ImGui Vulkan backend");
+        _vulkanInitialized = true;
 
-        // 2. 配置中文字体合并参数
-        config.MergeMode = true;      // 关键：开启合并模式
-        config.GlyphOffset.y = -0.7f; // 微调垂直偏移，中英文垂直居中(根据字体实际情况调整)
+        if (!(IO.BackendFlags & ImGuiBackendFlags_RendererHasTextures))
+            throw std::runtime_error("ImGui Vulkan backend must support dynamic textures");
 
-        // 3. 加载中文字体 (Merge)
-        ImFont* chineseFont = io.Fonts->AddFontFromFileTTF(
-            cnFontPath,
-            size+1.0f, // 保持和英文一样的大小
-            &config,
-            io.Fonts->GetGlyphRangesChineseFull() // 常用汉字范围
-        );
-        // 3. 合并特殊符号字体
-// 符号字体通常偏小，这里特意乘以 1.1 倍，让图标在 UI 中更饱满
-// 也可以保持 size 不变，看个人喜好
-        config.GlyphOffset.y = 0.0f; // 符号通常不需要额外偏移
-
-        ImFont* symFont = io.Fonts->AddFontFromFileTTF(
-            symFontPath,
-            size * 1.0f,
-            &config,
-            symbolRanges // 使用我们在 B 步骤定义的宽范围
-        );
-        if (chineseFont == nullptr)
-        {
-            NpgsCoreError("Failed to merge Chinese font for: {}", fontName);
-        }
-
-        return font;
-    };
-
-    // 获取 UI 上下文引用
-    UIContext& ctx = UIContext::Get();
-
-    // --- 加载5种层级的字体 ---
-
-    // 1. Regular (正文/标准): 16px
-    ctx.m_font_regular = LoadFontWithChinese(16.0f, "Regular");
-
-    // 2. Bold (标题/强调): 18px 
-    // 注意：如果没有专门的 Bold 字体文件，可以用同一个文件，后续如果有 bold.ttf 可以替换路径
-    ctx.m_font_bold = LoadFontWithChinese(18.0f, "Bold");
-
-    // 3. Large (数值/大标题): 24px
-    ctx.m_font_large = LoadFontWithChinese(24.0f, "Large");
-
-    // 4. Small (单位/辅助信息): 12px
-    ctx.m_font_small = LoadFontWithChinese(12.0f, "Small");
-
-
-    ctx.m_font_subtitle = LoadFontWithChinese(22.0f, "Subtitle");
-    // 设置默认字体为 Regular
-    io.FontDefault = ctx.m_font_regular;
-
-    // ================= [字体加载核心修改 END] =================
-
-
-    // 3. 手动构建图集
-    io.Fonts->Build();
-
-    // 初始化 ImGui GLFW 后端
-    if (!ImGui_ImplGlfw_InitForVulkan(window, true))
-    {
-        NpgsCoreError("Failed to initialize ImGui GLFW backend");
-        return false;
+        _initialized = true;
+        NpgsCoreInfo("Vulkan UI Renderer initialized successfully");
+        return true;
     }
-
-    // 初始化 ImGui Vulkan 后端
-    ImGui_ImplVulkan_InitInfo init_info = {};
-    init_info.Instance = _context->GetInstance();
-    init_info.PhysicalDevice = _context->GetPhysicalDevice();
-    init_info.Device = _context->GetDevice();
-    init_info.QueueFamily = _context->GetGraphicsQueueFamilyIndex();
-    init_info.Queue = _context->GetGraphicsQueue();
-    init_info.PipelineCache = VK_NULL_HANDLE;
-    init_info.DescriptorPool = _descriptorPool;
-    init_info.Subpass = 0;
-    init_info.MinImageCount = _context->GetSwapchainImageCount();
-    init_info.ImageCount = _context->GetSwapchainImageCount();
-    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.Allocator = nullptr;
-
-    init_info.CheckVkResultFn = [](VkResult err)
+    catch (...)
     {
-        if (err != VK_SUCCESS)
-        {
-           // NpgsCoreError(std::format("ImGui Vulkan Error: {}", static_cast<vk::Result>(err)));
-        }
-    };
-
-    if (!ImGui_ImplVulkan_Init(&init_info))
-    {
-        NpgsCoreError("Failed to initialize ImGui Vulkan backend");
-        return false;
+        Shutdown();
+        throw;
     }
-
-    // 上传字体纹理
-    auto commandBuffer = _context->GetTransferCommandBuffer();
-    commandBuffer.Begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
-
-    ImGui_ImplVulkan_CreateFontsTexture();
-
-    commandBuffer.End();
-    _context->ExecuteGraphicsCommands(commandBuffer);
-
-    // 清理字体上传产生的临时数据 (ImGui_ImplVulkan_DestroyFontUploadObjects 在较新版本中可能已废弃或自动处理，视版本而定)
-    // ImGui_ImplVulkan_DestroyFontUploadObjects(); 
-
-    _initialized = true;
-    NpgsCoreInfo("Vulkan UI Renderer initialized successfully");
-    return true;
 }
+
 void FVulkanUIRenderer::Shutdown()
 {
-    if (!_initialized) return;
-
-    _context->WaitIdle();
-
-    ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-
+    if (_vulkanInitialized)
+        _context->WaitIdle();
+    if (_imguiContext)
+        ImGui::SetCurrentContext(_imguiContext);
+    // WaitIdle above retires all uses; RemoveTexture needs the live backend/pool.
+    SetBlurTexture(0);
+    if (_vulkanInitialized)
+        ImGui_ImplVulkan_Shutdown();
+    if (_glfwInitialized)
+        ImGui_ImplGlfw_Shutdown();
+    if (_imguiContext)
+    {
+        auto& UI = System::UI::UIContext::Get();
+        UI.m_font_regular = UI.m_font_bold = UI.m_font_large = UI.m_font_small = UI.m_font_subtitle = nullptr;
+        ImGui::DestroyContext(_imguiContext);
+    }
     CleanupDescriptorPool();
-
-    _initialized = false;
-    NpgsCoreInfo("Vulkan UI Renderer shutdown");
+    _imguiContext = nullptr;
+    _glfwInitialized = _vulkanInitialized = _initialized = false;
 }
 
 void FVulkanUIRenderer::BeginFrame()
 {
     if (!_initialized) return;
-
+    ImGui::SetCurrentContext(_imguiContext);
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -213,49 +184,48 @@ void FVulkanUIRenderer::BeginFrame()
 
 void FVulkanUIRenderer::EndFrame()
 {
-    if (!_initialized) return;
-
-    ImGui::Render();
+    if (_initialized) ImGui::Render();
 }
 
 void FVulkanUIRenderer::Render(vk::CommandBuffer commandBuffer)
 {
-    if (!_initialized) return;
-
-    // 渲染 ImGui
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+    if (_initialized)
+    {
+        ImDrawData* DrawData = ImGui::GetDrawData();
+        if (DrawData->Textures)
+            for (const ImTextureData* Texture : *DrawData->Textures)
+                System::UI::ValidateUIFontTexture(*Texture, _fontTextureLimits);
+        // On the application's render thread, before its frame submit. The
+        // official backend owns texture uploads, queue waits and retirement.
+        ImGui_ImplVulkan_RenderDrawData(DrawData, commandBuffer);
+    }
 }
 
 void FVulkanUIRenderer::Resize(uint32_t width, uint32_t height)
 {
+    (void)width;
+    (void)height;
     if (!_initialized) return;
-
-    // ImGui 会自动处理窗口大小变化
+    const uint32_t ImageCount = _context->GetSwapchainImageCount();
+    if (ImageCount != _imageCount)
+    {
+        if (ImageCount < 2)
+            throw std::runtime_error("ImGui Vulkan backend requires at least two swapchain images");
+        ImGui_ImplVulkan_SetMinImageCount(ImageCount);
+        _imageCount = ImageCount;
+    }
 }
 
 void FVulkanUIRenderer::CreateDescriptorPool()
 {
-    std::vector<vk::DescriptorPoolSize> poolSizes = {
-        { vk::DescriptorType::eSampler, 1000 },
-        { vk::DescriptorType::eCombinedImageSampler, 1000 },
+    const std::vector<vk::DescriptorPoolSize> PoolSizes = {
         { vk::DescriptorType::eSampledImage, 1000 },
-        { vk::DescriptorType::eStorageImage, 1000 },
-        { vk::DescriptorType::eUniformTexelBuffer, 1000 },
-        { vk::DescriptorType::eStorageTexelBuffer, 1000 },
-        { vk::DescriptorType::eUniformBuffer, 1000 },
-        { vk::DescriptorType::eStorageBuffer, 1000 },
-        { vk::DescriptorType::eUniformBufferDynamic, 1000 },
-        { vk::DescriptorType::eStorageBufferDynamic, 1000 },
-        { vk::DescriptorType::eInputAttachment, 1000 }
+        { vk::DescriptorType::eSampler, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE }
     };
-
-    vk::DescriptorPoolCreateInfo poolInfo(
+    vk::DescriptorPoolCreateInfo PoolInfo(
         vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-        1000 * static_cast<uint32_t>(poolSizes.size()),
-        poolSizes
-    );
-
-    _descriptorPool = _context->GetDevice().createDescriptorPool(poolInfo);
+        1000 + IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE, PoolSizes);
+    _descriptorPool = _context->GetDevice().createDescriptorPool(PoolInfo);
 }
 
 void FVulkanUIRenderer::CleanupDescriptorPool()
@@ -263,19 +233,33 @@ void FVulkanUIRenderer::CleanupDescriptorPool()
     if (_descriptorPool)
     {
         _context->GetDevice().destroyDescriptorPool(_descriptorPool);
-        _descriptorPool = vk::DescriptorPool();
+        _descriptorPool = nullptr;
     }
 }
-ImTextureID FVulkanUIRenderer::AddTexture(vk::Sampler sampler, vk::ImageView imageView, vk::ImageLayout layout)
+
+ImTextureID FVulkanUIRenderer::AddTexture(vk::ImageView imageView, vk::ImageLayout layout)
 {
-    // ImGui_ImplVulkan_AddTexture 需要 VkSampler, VkImageView, VkImageLayout (C类型)
-    // vk::Sampler 等 C++ 包装器可以通过 static_cast 转换为对应的 C 类型句柄
     return (ImTextureID)ImGui_ImplVulkan_AddTexture(
-        static_cast<VkSampler>(sampler),
         static_cast<VkImageView>(imageView),
-        static_cast<VkImageLayout>(layout)
-    );
+        static_cast<VkImageLayout>(layout));
 }
+
+void FVulkanUIRenderer::SetBlurTexture(ImTextureID texture)
+{
+    if (texture && !_vulkanInitialized)
+        throw std::logic_error("Cannot adopt a blur texture without a live ImGui Vulkan backend");
+    if (_imguiContext)
+        ImGui::SetCurrentContext(_imguiContext);
+    if (_blurTexture != texture)
+    {
+        if (_blurTexture)
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)_blurTexture);
+        _blurTexture = texture;
+    }
+    // UIContext borrows the ID; never free an ID merely found in its public field.
+    System::UI::UIContext::Get().m_scene_blur_texture = texture;
+}
+
 _GRAPHICS_END
 _RUNTIME_END
 _NPGS_END

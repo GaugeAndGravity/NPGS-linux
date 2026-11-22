@@ -1,5 +1,8 @@
 #include "Shader.h"
 
+#include <format>
+#include <stdexcept>
+
 _NPGS_BEGIN
 _RUNTIME_BEGIN
 _ASSET_BEGIN
@@ -17,6 +20,10 @@ inline void FShader::WriteSharedDescriptors(std::uint32_t Set, std::uint32_t Bin
 
     for (const auto& DescriptorSet : SetIt->second)
     {
+        if (!DescriptorSet)
+        {
+            throw std::runtime_error(std::format("Cannot write null descriptor set {}, binding {}", Set, Binding));
+        }
         DescriptorSet.Write(DescriptorInfos, Type, Binding);
     }
 
@@ -34,7 +41,17 @@ inline void FShader::WriteDynamicDescriptors(std::uint32_t Set, std::uint32_t Bi
         return;
     }
 
+    if (FrameIndex >= SetIt->second.size())
+    {
+        throw std::out_of_range(std::format("Invalid descriptor frame {} for set {}, binding {}",
+                                           FrameIndex, Set, Binding));
+    }
     const auto& DescriptorSet = SetIt->second[FrameIndex];
+    if (!DescriptorSet)
+    {
+        throw std::runtime_error(std::format("Cannot write null descriptor set {}, binding {}, frame {}",
+                                            Set, Binding, FrameIndex));
+    }
     DescriptorSet.Write(DescriptorInfos, Type, Binding);
 
     MarkAllFramesForUpdate();

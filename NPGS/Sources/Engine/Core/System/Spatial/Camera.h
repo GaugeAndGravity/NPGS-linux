@@ -10,7 +10,7 @@ _NPGS_BEGIN
 _SYSTEM_BEGIN
 _SPATIAL_BEGIN
 
-constexpr glm::vec3 kPosition    = glm::vec3(0.0f);
+inline const glm::vec3 kPosition = glm::vec3(0.0f);
 constexpr float     kSensitivity = 0.05f;
 constexpr float     kSpeed       = 0.00000025f;
 constexpr float     kZoom        = 60.0f;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -31,13 +32,15 @@ public:
                                vk::ComputePipelineCreateInfo* ComputePipelineCreateInfo = nullptr);
 
     void RemovePipeline(const std::string& Name);
+    // The caller must wait for GPU work before releasing the cached handles.
+    void ClearResources();
     vk::PipelineLayout GetPipelineLayout(const std::string& Name) const;
     vk::Pipeline GetPipeline(const std::string& Name) const;
 
     static FPipelineManager* GetInstance();
 
 private:
-    FPipelineManager()                        = default;
+    FPipelineManager();
     FPipelineManager(const FPipelineManager&) = delete;
     FPipelineManager(FPipelineManager&&)      = delete;
     ~FPipelineManager()                       = default;
@@ -52,6 +55,8 @@ private:
     std::unordered_map<std::string, vk::ComputePipelineCreateInfo>   _ComputePipelineCreateInfos;
     std::unordered_map<std::string, FVulkanPipelineLayout>           _PipelineLayouts;
     std::unordered_map<std::string, FVulkanPipeline>                 _Pipelines;
+    // Declared last so retained callbacks expire before the containers destruct.
+    std::shared_ptr<void> _CallbackLifetime{ std::make_shared<int>(0) };
 };
 
 _GRAPHICS_END

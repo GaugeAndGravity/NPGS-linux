@@ -83,7 +83,7 @@ namespace
 // --------------------------------
 FOrbitalGenerator::FOrbitalGenerator(const FOrbitalGenerationInfo& GenerationInfo)
     :
-    _RandomEngine(*GenerationInfo.SeedSequence),
+    _RandomEngine(Util::MakeRandomEngine(*GenerationInfo.SeedSequence)),
     _RingsProbabilities{ Util::TBernoulliDistribution<>(0.5), Util::TBernoulliDistribution<>(0.2) },
     _BinaryPeriodDistribution(GenerationInfo.BinaryPeriodMean, GenerationInfo.BinaryPeriodSigma),
     _CommonGenerator(0.0f, 1.0f),

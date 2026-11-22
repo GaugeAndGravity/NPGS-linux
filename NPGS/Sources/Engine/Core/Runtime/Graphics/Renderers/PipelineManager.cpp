@@ -12,6 +12,28 @@ _NPGS_BEGIN
 _RUNTIME_BEGIN
 _GRAPHICS_BEGIN
 
+FPipelineManager::FPipelineManager()
+{
+    const std::weak_ptr<void> Lifetime = _CallbackLifetime;
+    FVulkanContext::GetClassInstance()->AddDestroyDeviceCallback("ClearPipelineManagerResources", [this, Lifetime]()
+    {
+        // Explicit Core shutdown invokes and removes this callback while the
+        // device is alive. The token also guards against late static teardown.
+        if (const auto Guard = Lifetime.lock())
+        {
+            ClearResources();
+        }
+    });
+}
+
+void FPipelineManager::ClearResources()
+{
+    _Pipelines.clear();
+    _PipelineLayouts.clear();
+    _GraphicsPipelineCreateInfoPacks.clear();
+    _ComputePipelineCreateInfos.clear();
+}
+
 void FPipelineManager::CreateGraphicsPipeline(const std::string& PipelineName, const std::string& ShaderName,
                                               FGraphicsPipelineCreateInfoPack& GraphicsPipelineCreateInfoPack)
 {

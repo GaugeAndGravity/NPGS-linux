@@ -16,6 +16,22 @@ _GRAPHICS_BEGIN
 FShaderResourceManager::FShaderResourceManager()
     : _Allocator(FVulkanContext::GetClassInstance()->GetVmaAllocator())
 {
+    FVulkanCore::GetClassInstance()->AddDestroyDeviceCallback("ReleaseUniformBuffers", [this]()
+    {
+        ClearResources();
+    });
+}
+
+FShaderResourceManager::~FShaderResourceManager()
+{
+    FVulkanCore::GetClassInstance()->RemoveDestroyDeviceCallback("ReleaseUniformBuffers");
+    ClearResources();
+}
+
+void FShaderResourceManager::ClearResources() noexcept
+{
+    _UniformBuffers.clear();
+    _Allocator = nullptr;
 }
 
 void FShaderResourceManager::BindShaderToBuffers(const std::string& BufferName, const std::string& ShaderName, vk::DeviceSize Range)

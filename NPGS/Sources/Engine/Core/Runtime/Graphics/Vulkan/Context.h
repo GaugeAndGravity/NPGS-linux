@@ -7,7 +7,7 @@
 #include <utility>
 
 #include <magic_enum/magic_enum.hpp>
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_handles.hpp>
 
 #include "Engine/Core/Base/Base.h"
@@ -54,7 +54,11 @@ public:
     vk::Result CreateInstance(vk::InstanceCreateFlags Flags = {});
     vk::Result CreateDevice(std::uint32_t PhysicalDeviceIndex = 0, vk::DeviceCreateFlags Flags = {});
     vk::Result RecreateDevice(std::uint32_t PhysicalDeviceIndex = 0, vk::DeviceCreateFlags Flags = {});
+    vk::Result Shutdown() noexcept;
+    bool IsShutdown() const noexcept;
     void       SetSurface(vk::SurfaceKHR Surface);
+    vk::Result ReleaseSurface() noexcept;
+    void       SetFramebufferSize(vk::Extent2D Extent);
     vk::Result SetSurfaceFormat(const vk::SurfaceFormatKHR& SurfaceFormat);
     vk::Result CreateSwapchain(vk::Extent2D Extent, bool bLimitFps = true, vk::SwapchainCreateFlagsKHR Flags = {});
     vk::Result RecreateSwapchain();
@@ -166,6 +170,8 @@ private:
 
 private:
     FVulkanCore* _VulkanCore;
+    bool         _bShutdown{ false };
+    vk::Result   _ShutdownResult{ vk::Result::eSuccess };
 
     std::vector<std::pair<ECallbackType, std::string>>                     _AutoRemovedCallbacks;
     // std::array<vk::FormatProperties, magic_enum::enum_count<vk::Format>()> _FormatProperties;

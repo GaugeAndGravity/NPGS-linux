@@ -8,7 +8,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_handles.hpp>
 
 #include "Engine/Core/Base/Base.h"
@@ -81,6 +81,7 @@ public:
                        std::uint32_t BufferCount = 0);
 
     void RemoveBuffer(const std::string& Name);
+    void ClearResources() noexcept;
 
     template <typename StructType>
     requires std::is_class_v<StructType>
@@ -115,7 +116,7 @@ private:
     FShaderResourceManager();
     FShaderResourceManager(const FShaderResourceManager&) = delete;
     FShaderResourceManager(FShaderResourceManager&&)      = delete;
-    ~FShaderResourceManager()                             = default;
+    ~FShaderResourceManager();
 
     FShaderResourceManager& operator=(const FShaderResourceManager&) = delete;
     FShaderResourceManager& operator=(FShaderResourceManager&&)      = delete;

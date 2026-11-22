@@ -1,7 +1,7 @@
 #include "TechButton.h"
 #include "../TechUtils.h"
 #include "../I18n/I18nManager.h" // [新增]
-#include <imgui_internal.h>
+#include "../UIFontRendering.h"
 
 _NPGS_BEGIN
 _SYSTEM_BEGIN
@@ -164,7 +164,7 @@ ImVec2 TechButton::Measure(ImVec2 available_size)
         ImFont* font = UIContext::Get().m_font_small ? UIContext::Get().m_font_small : ImGui::GetFont();
         if (font)
         {
-            ImVec2 text_size = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, m_current_display_text.c_str());
+            ImVec2 text_size = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.0f, m_current_display_text.c_str());
             content_size.x = text_size.y + m_padding.x * 2;
             content_size.y = text_size.x + m_padding.y * 2;
         }
@@ -259,60 +259,9 @@ void TechButton::DrawVerticalText(ImDrawList* dl, ImU32 col)
     ImFont* font = UIContext::Get().m_font_small;
     if (!font) font = ImGui::GetFont();
 
-    float angle = 3.14159f * 0.5f;
-    float c = cosf(angle);
-    float s = sinf(angle);
-
-    float font_size = font->FontSize;
-    ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, m_current_display_text.c_str());
     ImVec2 center = { m_absolute_pos.x + m_rect.w * 0.5f, m_absolute_pos.y + m_rect.h * 0.5f };
-    ImVec2 pen_local = { -text_size.x * 0.5f, -text_size.y * 0.5f };
-    ImTextureID tex_id = font->ContainerAtlas->TexID;
-
-    if (font) ImGui::PushFont(font);
-
-    const char* text_begin = m_current_display_text.c_str();
-    const char* text_end = text_begin + m_current_display_text.length();
-    const char* ptr = text_begin;
-    while (ptr < text_end)
-    {
-        unsigned int char_code = 0;
-
-        // [核心修正] ImTextCharFromUtf8 返回消耗的字节数 (int)，而不是指针
-        int char_bytes = ImTextCharFromUtf8(&char_code, ptr, text_end);
-
-        // 如果解码失败或到达字符串末尾，则退出循环
-        if (char_bytes == 0)
-        {
-            break;
-        }
-
-        const ImFontGlyph* glyph = font->FindGlyph((ImWchar)char_code);
-        if (glyph && glyph->Visible)
-        {
-            float x0 = pen_local.x + glyph->X0; float y0 = pen_local.y + glyph->Y0;
-            float x1 = pen_local.x + glyph->X1; float y1 = pen_local.y + glyph->Y1;
-
-            auto rot = [&](float x, float y)
-            {
-                return ImVec2(center.x + (x * c - y * s), center.y + (x * s + y * c));
-            };
-
-            dl->AddImageQuad(tex_id, rot(x0, y0), rot(x1, y0), rot(x1, y1), rot(x0, y1),
-                ImVec2(glyph->U0, glyph->V0), ImVec2(glyph->U1, glyph->V0),
-                ImVec2(glyph->U1, glyph->V1), ImVec2(glyph->U0, glyph->V1), col);
-        }
-
-        if (glyph)
-        {
-            pen_local.x += glyph->AdvanceX;
-        }
-
-        // [核心修正] 手动将指针向前移动消耗的字节数
-        ptr += char_bytes;
-    }
-
-    if (font) ImGui::PopFont();
+    DrawRotatedUIText(dl, font, UIContext::Get().GetFontSize(font), center, col,
+                      m_current_display_text.c_str());
 }
 
 

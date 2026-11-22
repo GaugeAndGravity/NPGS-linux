@@ -109,6 +109,21 @@ NPGS_INLINE void FVulkanContext::SetSurface(vk::SurfaceKHR Surface)
     _VulkanCore->SetSurface(Surface);
 }
 
+NPGS_INLINE bool FVulkanContext::IsShutdown() const noexcept
+{
+    return _bShutdown || _VulkanCore->IsShutdown();
+}
+
+NPGS_INLINE vk::Result FVulkanContext::ReleaseSurface() noexcept
+{
+    return _VulkanCore->ReleaseSurface();
+}
+
+NPGS_INLINE void FVulkanContext::SetFramebufferSize(vk::Extent2D Extent)
+{
+    _VulkanCore->SetFramebufferSize(Extent);
+}
+
 NPGS_INLINE vk::Result FVulkanContext::SetSurfaceFormat(const vk::SurfaceFormatKHR& SurfaceFormat)
 {
     return _VulkanCore->SetSurfaceFormat(SurfaceFormat);
@@ -181,7 +196,7 @@ FVulkanContext::SubmitCommandBufferToPresent(const FVulkanCommandBuffer& Buffer,
                                              const FVulkanSemaphore*     SignalSemaphore,
                                              const FVulkanFence*         Fence) const
 {
-    SubmitCommandBufferToPresent(*Buffer, WaitSemaphore ? **WaitSemaphore : vk::Semaphore(),
+    return SubmitCommandBufferToPresent(*Buffer, WaitSemaphore ? **WaitSemaphore : vk::Semaphore(),
                                  SignalSemaphore ? **SignalSemaphore : vk::Semaphore(),
                                  Fence ? **Fence : vk::Fence());
 }

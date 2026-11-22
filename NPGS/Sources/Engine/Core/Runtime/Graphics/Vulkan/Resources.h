@@ -6,7 +6,7 @@
 #include <type_traits>
 #include <vector>
 
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_handles.hpp>
 
 #include "Engine/Core/Base/Base.h"
@@ -152,10 +152,10 @@ public:
     static FStagingBufferPool* GetInstance();
 
 private:
-    FStagingBufferPool()                      = default;
+    FStagingBufferPool();
     FStagingBufferPool(const FStagingBuffer&) = delete;
     FStagingBufferPool(FStagingBufferPool&&)  = delete;
-    ~FStagingBufferPool()                     = default;
+    ~FStagingBufferPool();
 
     FStagingBufferPool& operator=(const FStagingBuffer&) = delete;
     FStagingBufferPool& operator=(FStagingBufferPool&&)  = delete;

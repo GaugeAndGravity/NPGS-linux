@@ -35,8 +35,36 @@ namespace
 
 FGraphicsPipelineCreateInfoPack::FGraphicsPipelineCreateInfoPack()
 {
-    LinkToGraphicsPipelineCreateInfo();
+    // Vulkan-Hpp zero-initializes lineWidth; zero is invalid without wideLines.
+    RasterizationStateCreateInfo.setLineWidth(1.0f);
+    MultisampleStateCreateInfo.setRasterizationSamples(vk::SampleCountFlagBits::e1);
     GraphicsPipelineCreateInfo.setBasePipelineIndex(-1);
+    UpdateAllInfoData();
+}
+
+FGraphicsPipelineCreateInfoPack::FGraphicsPipelineCreateInfoPack(const FGraphicsPipelineCreateInfoPack& Other)
+    :
+    GraphicsPipelineCreateInfo(Other.GraphicsPipelineCreateInfo),
+    VertexInputStateCreateInfo(Other.VertexInputStateCreateInfo),
+    InputAssemblyStateCreateInfo(Other.InputAssemblyStateCreateInfo),
+    TessellationStateCreateInfo(Other.TessellationStateCreateInfo),
+    ViewportStateCreateInfo(Other.ViewportStateCreateInfo),
+    RasterizationStateCreateInfo(Other.RasterizationStateCreateInfo),
+    MultisampleStateCreateInfo(Other.MultisampleStateCreateInfo),
+    DepthStencilStateCreateInfo(Other.DepthStencilStateCreateInfo),
+    ColorBlendStateCreateInfo(Other.ColorBlendStateCreateInfo),
+    DynamicStateCreateInfo(Other.DynamicStateCreateInfo),
+    ShaderStages(Other.ShaderStages),
+    VertexInputBindings(Other.VertexInputBindings),
+    VertexInputAttributes(Other.VertexInputAttributes),
+    Viewports(Other.Viewports),
+    Scissors(Other.Scissors),
+    ColorBlendAttachmentStates(Other.ColorBlendAttachmentStates),
+    DynamicStates(Other.DynamicStates),
+    DynamicViewportCount(Other.DynamicViewportCount),
+    DynamicScissorCount(Other.DynamicScissorCount)
+{
+    UpdateAllInfoData();
 }
 
 FGraphicsPipelineCreateInfoPack::FGraphicsPipelineCreateInfoPack(FGraphicsPipelineCreateInfoPack&& Other) noexcept
@@ -63,8 +91,17 @@ FGraphicsPipelineCreateInfoPack::FGraphicsPipelineCreateInfoPack(FGraphicsPipeli
     DynamicViewportCount(std::exchange(Other.DynamicViewportCount, 1)),
     DynamicScissorCount(std::exchange(Other.DynamicScissorCount, 1))
 {
-    LinkToGraphicsPipelineCreateInfo();
     UpdateAllInfoData();
+}
+
+FGraphicsPipelineCreateInfoPack& FGraphicsPipelineCreateInfoPack::operator=(const FGraphicsPipelineCreateInfoPack& Other)
+{
+    if (this != &Other)
+    {
+        FGraphicsPipelineCreateInfoPack Copy(Other);
+        *this = std::move(Copy);
+    }
+    return *this;
 }
 
 FGraphicsPipelineCreateInfoPack& FGraphicsPipelineCreateInfoPack::operator=(FGraphicsPipelineCreateInfoPack&& Other) noexcept
@@ -94,7 +131,6 @@ FGraphicsPipelineCreateInfoPack& FGraphicsPipelineCreateInfoPack::operator=(FGra
         DynamicViewportCount         = std::exchange(Other.DynamicViewportCount, 1);
         DynamicScissorCount          = std::exchange(Other.DynamicScissorCount, 1);
 
-        LinkToGraphicsPipelineCreateInfo();
         UpdateAllInfoData();
     }
 
@@ -103,11 +139,6 @@ FGraphicsPipelineCreateInfoPack& FGraphicsPipelineCreateInfoPack::operator=(FGra
 
 void FGraphicsPipelineCreateInfoPack::Update()
 {
-    ViewportStateCreateInfo.setViewportCount(
-        Viewports.size() ? static_cast<std::uint32_t>(Viewports.size()) : DynamicViewportCount);
-    ViewportStateCreateInfo.setScissorCount(
-        Scissors.size() ? static_cast<std::uint32_t>(Scissors.size()) : DynamicScissorCount);
-
     UpdateAllInfoData();
 }
 
@@ -128,7 +159,7 @@ void FGraphicsPipelineCreateInfoPack::UpdateAllInfoData()
 {
     if (Viewports.empty())
     {
-        ViewportStateCreateInfo.setPViewports(nullptr);
+        ViewportStateCreateInfo.setViewportCount(DynamicViewportCount).setPViewports(nullptr);
     }
     else
     {
@@ -137,7 +168,7 @@ void FGraphicsPipelineCreateInfoPack::UpdateAllInfoData()
 
     if (Scissors.empty())
     {
-        ViewportStateCreateInfo.setPScissors(nullptr);
+        ViewportStateCreateInfo.setScissorCount(DynamicScissorCount).setPScissors(nullptr);
     }
     else
     {
@@ -562,6 +593,9 @@ FVulkanDeviceMemory::~FVulkanDeviceMemory()
         }
 
         vmaFreeMemory(_Allocator, _Allocation);
+        // VMA owns VkDeviceMemory, including suballocations shared with others.
+        // The base wrapper must not pass it to vkFreeMemory a second time.
+        _Handle = vk::DeviceMemory();
     }
 }
 

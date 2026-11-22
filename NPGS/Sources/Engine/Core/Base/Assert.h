@@ -2,27 +2,27 @@
 
 // Assert
 // ------
-#ifdef _DEBUG
+#if !defined(NDEBUG) && !defined(NPGS_ENABLE_ASSERT)
 #define NPGS_ENABLE_ASSERT
-#endif // _DEBUG
+#endif
 
 #ifdef NPGS_ENABLE_ASSERT
+#include <cstdlib>
 #include <iostream>
-#include <Windows.h>
 
 #define NpgsAssert(Expr, ...)                                                                                 \
+do {                                                                                                          \
 if (!(Expr))                                                                                                  \
 {                                                                                                             \
     std::cerr << "Assertion failed: " << #Expr << " in " << __FILE__ << " at line " << __LINE__ << std::endl; \
-    std::cerr << "Message: " << __VA_ARGS__ << std::endl;                                                     \
-    DebugBreak();                                                                                             \
-}
-
-#define NpgsStaticAssert(Expr, ...) static_assert(Expr, __VA_ARGS__)
+    __VA_OPT__(std::cerr << "Message: " << __VA_ARGS__ << std::endl;)                                          \
+    std::abort();                                                                                             \
+}                                                                                                             \
+} while (false)
 
 #else
 
 #define NpgsAssert(Expr, ...)       static_cast<void>(0)
-#define NpgsStaticAssert(Expr, ...) static_cast<void>(0)
-
 #endif // NPGS_ENABLE_ASSERT
+
+#define NpgsStaticAssert(Expr, ...) static_assert(Expr __VA_OPT__(,) __VA_ARGS__)

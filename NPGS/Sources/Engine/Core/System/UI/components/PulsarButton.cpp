@@ -460,7 +460,7 @@ void PulsarButton::Update(float dt)
         ImFont* font = m_text_label->GetFont();
         if (font)
         {
-            float w = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, m_text_label->m_current_display_text.c_str()).x;
+            float w = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.0f, m_text_label->m_current_display_text.c_str()).x;
             if (w > max_text_w) max_text_w = w;
         }
     }
@@ -470,7 +470,7 @@ void PulsarButton::Update(float dt)
         ImFont* font = m_text_status->GetFont();
         if (font)
         {
-            float w = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, m_text_status->m_current_display_text.c_str()).x;
+            float w = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.0f, m_text_status->m_current_display_text.c_str()).x;
             if (w > max_text_w) max_text_w = w;
         }
     }
@@ -579,7 +579,7 @@ void PulsarButton::Update(float dt)
 
         ImFont* font = m_text_stat_label->GetFont();
         float lbl_w = 0.0f;
-        if (font) lbl_w = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, m_text_stat_label->m_source_key_or_text.c_str()).x;
+        if (font) lbl_w = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.0f, m_text_stat_label->m_source_key_or_text.c_str()).x;
 
         float val_x = rel_text_x + lbl_w + 5.0f;
 
@@ -601,7 +601,7 @@ void PulsarButton::Update(float dt)
             else
             {
                 ImFont* lg_font = UIContext::Get().m_font_large;
-                if (lg_font && m_text_stat_value) val_w = lg_font->CalcTextSizeA(lg_font->FontSize, FLT_MAX, 0.0f, m_text_stat_value->m_hacker_effect.m_display_text.c_str()).x;
+                if (lg_font && m_text_stat_value) val_w = lg_font->CalcTextSizeA(UIContext::Get().GetFontSize(lg_font), FLT_MAX, 0.0f, m_text_stat_value->m_hacker_effect.m_display_text.c_str()).x;
             }
 
             m_text_stat_unit->m_alpha = text_alpha;
@@ -883,7 +883,7 @@ void PulsarButton::Draw(ImDrawList* draw_list)
     ImFont* font = GetFont();
     if (font)
     {
-        ImGui::PushFont(font);
+        ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
         font_pushed = true;
     }
 
@@ -960,7 +960,7 @@ void PulsarButton::HandleMouseEvent(const ImVec2& mouse_pos, bool mouse_down, bo
         {
             ImFont* font = UIContext::Get().m_font_bold;
             ImVec2 txt_sz = { 100, 20 };
-            if (font) txt_sz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, m_text_label->m_current_display_text.c_str());
+            if (font) txt_sz = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.0f, m_text_label->m_current_display_text.c_str());
 
             label_abs_rect = { m_text_label->m_absolute_pos.x - 5.0f, m_text_label->m_absolute_pos.y - 5.0f, txt_sz.x + 10.0f, txt_sz.y + 10.0f };
         }

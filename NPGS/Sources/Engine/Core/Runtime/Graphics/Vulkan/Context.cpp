@@ -1,6 +1,7 @@
 #include "Context.h"
 
 #include <cstddef>
+#include <stdexcept>
 
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_to_string.hpp>
@@ -13,7 +14,7 @@ _GRAPHICS_BEGIN
 namespace
 {
     vk::SubmitInfo CreateSubmitInfo(const vk::CommandBuffer& CommandBuffer, const vk::Semaphore& WaitSemaphore,
-                                    const vk::Semaphore& SignalSemaphore, vk::PipelineStageFlags Flags)
+                                    const vk::Semaphore& SignalSemaphore)
     {
         vk::SubmitInfo SubmitInfo;
         SubmitInfo.setCommandBuffers(CommandBuffer);
@@ -21,7 +22,6 @@ namespace
         if (WaitSemaphore)
         {
             SubmitInfo.setWaitSemaphores(WaitSemaphore);
-            SubmitInfo.setWaitDstStageMask(Flags);
         }
 
         if (SignalSemaphore)
@@ -41,18 +41,34 @@ FVulkanContext::FVulkanContext()
 {
     auto InitializeCommandPool = [this]() -> void
     {
+        if (!_TransferCommandBuffer)
+        {
+            _TransferCommandBuffer = std::make_unique<FVulkanCommandBuffer>();
+        }
+        if (!_PresentCommandBuffer)
+        {
+            _PresentCommandBuffer = std::make_unique<FVulkanCommandBuffer>();
+        }
         if (_VulkanCore->GetGraphicsQueueFamilyIndex() != vk::QueueFamilyIgnored)
         {
             _GraphicsCommandPool =
                 std::make_unique<FVulkanCommandPool>(_VulkanCore->GetDevice(), _VulkanCore->GetGraphicsQueueFamilyIndex(),
                                                      vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
-            _GraphicsCommandPool->AllocateBuffer(vk::CommandBufferLevel::ePrimary, *_TransferCommandBuffer);
+            if (!_GraphicsCommandPool->IsValid() ||
+                _GraphicsCommandPool->AllocateBuffer(vk::CommandBufferLevel::ePrimary, *_TransferCommandBuffer) != vk::Result::eSuccess)
+            {
+                throw std::runtime_error("Failed to initialize Vulkan graphics command pool/buffer.");
+            }
         }
         if (_VulkanCore->GetComputeQueueFamilyIndex() != vk::QueueFamilyIgnored)
         {
             _ComputeCommandPool =
                 std::make_unique<FVulkanCommandPool>(_VulkanCore->GetDevice(), _VulkanCore->GetComputeQueueFamilyIndex(),
-                                                     vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+                                                      vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+            if (!_ComputeCommandPool->IsValid())
+            {
+                throw std::runtime_error("Failed to initialize Vulkan compute command pool.");
+            }
         }
         if (_VulkanCore->GetPresentQueueFamilyIndex() != vk::QueueFamilyIgnored &&
             _VulkanCore->GetPresentQueueFamilyIndex() != _VulkanCore->GetGraphicsQueueFamilyIndex() &&
@@ -61,7 +77,11 @@ FVulkanContext::FVulkanContext()
             _PresentCommandPool =
                 std::make_unique<FVulkanCommandPool>(_VulkanCore->GetDevice(), _VulkanCore->GetPresentQueueFamilyIndex(),
                                                      vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
-            _PresentCommandPool->AllocateBuffer(vk::CommandBufferLevel::ePrimary, *_PresentCommandBuffer);
+            if (!_PresentCommandPool->IsValid() ||
+                _PresentCommandPool->AllocateBuffer(vk::CommandBufferLevel::ePrimary, *_PresentCommandBuffer) != vk::Result::eSuccess)
+            {
+                throw std::runtime_error("Failed to initialize Vulkan present command pool/buffer.");
+            }
         }
     };
 
@@ -75,13 +95,37 @@ FVulkanContext::FVulkanContext()
     // };
 
     _VulkanCore->AddCreateDeviceCallback("InitializeCommandPool", InitializeCommandPool);
+    _VulkanCore->AddDestroyDeviceCallback("DestroyCommandPools", [this]()
+    {
+        _TransferCommandBuffer.reset();
+        _PresentCommandBuffer.reset();
+        _PresentCommandPool.reset();
+        _ComputeCommandPool.reset();
+        _GraphicsCommandPool.reset();
+    });
     // _VulkanCore->AddCreateDeviceCallback("InitializeFormatProperties", InitializeFormatProperties);
 }
 
 FVulkanContext::~FVulkanContext()
 {
-    WaitIdle();
-    RemoveRegisteredCallbacks();
+    if (!_bShutdown)
+    {
+        Shutdown();
+    }
+}
+
+vk::Result FVulkanContext::Shutdown() noexcept
+{
+    if (_bShutdown)
+    {
+        return _ShutdownResult;
+    }
+    _ShutdownResult = _VulkanCore->Shutdown();
+    // Core executed/cleared the callbacks with the device still alive. Do not
+    // perform any Vulkan work when this singleton is destroyed later at exit.
+    _AutoRemovedCallbacks.clear();
+    _bShutdown = true;
+    return _ShutdownResult;
 }
 
 void FVulkanContext::RegisterAutoRemovedCallbacks(ECallbackType Type, const std::string& Name, const std::function<void()>& Callback)
@@ -138,7 +182,7 @@ vk::Result FVulkanContext::ExecuteGraphicsCommands(vk::CommandBuffer CommandBuff
     vk::Result Result;
     if ((Result = SubmitCommandBufferToGraphics(CommandBuffer, *Fence)) == vk::Result::eSuccess)
     {
-        Fence.Wait();
+        return Fence.Wait();
     }
     else
     {
@@ -155,7 +199,7 @@ vk::Result FVulkanContext::ExecutePresentCommands(vk::CommandBuffer CommandBuffe
     vk::Result Result;
     if ((Result = SubmitCommandBufferToPresent(CommandBuffer, *Fence)) == vk::Result::eSuccess)
     {
-        Fence.Wait();
+        return Fence.Wait();
     }
     else
     {
@@ -172,7 +216,7 @@ vk::Result FVulkanContext::ExecuteComputeCommands(vk::CommandBuffer CommandBuffe
     vk::Result Result;
     if ((Result = SubmitCommandBufferToCompute(CommandBuffer, *Fence)) == vk::Result::eSuccess)
     {
-        Fence.Wait();
+        return Fence.Wait();
     }
     else
     {
@@ -208,7 +252,12 @@ vk::Result
 FVulkanContext::SubmitCommandBufferToGraphics(vk::CommandBuffer Buffer, vk::Semaphore WaitSemaphore,
                                               vk::Semaphore SignalSemaphore, vk::Fence Fence, vk::PipelineStageFlags Flags) const
 {
-    vk::SubmitInfo SubmitInfo = CreateSubmitInfo(Buffer, WaitSemaphore, SignalSemaphore, Flags);
+    vk::SubmitInfo SubmitInfo = CreateSubmitInfo(Buffer, WaitSemaphore, SignalSemaphore);
+    if (WaitSemaphore)
+    {
+        // SubmitInfo is non-owning; the mask must remain alive through submit.
+        SubmitInfo.setWaitDstStageMask(Flags);
+    }
     return SubmitCommandBufferToGraphics(SubmitInfo, Fence);
 }
 
@@ -236,7 +285,12 @@ vk::Result FVulkanContext::SubmitCommandBufferToPresent(vk::CommandBuffer Buffer
 vk::Result FVulkanContext::SubmitCommandBufferToPresent(vk::CommandBuffer Buffer, vk::Semaphore WaitSemaphore,
                                                         vk::Semaphore SignalSemaphore, vk::Fence Fence) const
 {
-    vk::SubmitInfo SubmitInfo = CreateSubmitInfo(Buffer, WaitSemaphore, SignalSemaphore, vk::PipelineStageFlagBits::eAllCommands);
+    const vk::PipelineStageFlags WaitStages = vk::PipelineStageFlagBits::eAllCommands;
+    vk::SubmitInfo SubmitInfo = CreateSubmitInfo(Buffer, WaitSemaphore, SignalSemaphore);
+    if (WaitSemaphore)
+    {
+        SubmitInfo.setWaitDstStageMask(WaitStages);
+    }
     try
     {
         _VulkanCore->GetPresentQueue().submit(SubmitInfo, Fence);
@@ -275,7 +329,11 @@ vk::Result
 FVulkanContext::SubmitCommandBufferToCompute(vk::CommandBuffer Buffer, vk::Semaphore WaitSemaphore,
                                              vk::Semaphore SignalSemaphore, vk::Fence Fence, vk::PipelineStageFlags Flags) const
 {
-    vk::SubmitInfo SubmitInfo = CreateSubmitInfo(Buffer, WaitSemaphore, SignalSemaphore, Flags);
+    vk::SubmitInfo SubmitInfo = CreateSubmitInfo(Buffer, WaitSemaphore, SignalSemaphore);
+    if (WaitSemaphore)
+    {
+        SubmitInfo.setWaitDstStageMask(Flags);
+    }
     return SubmitCommandBufferToCompute(SubmitInfo, Fence);
 }
 

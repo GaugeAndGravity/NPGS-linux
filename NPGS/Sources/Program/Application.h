@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,6 +25,11 @@
 #include <Engine/Core/System/Generators/StellarGenerator.h>
 _NPGS_BEGIN
 
+namespace Runtime::Asset
+{
+class FAssetManager;
+}
+
 class FApplication
 {
 private:
@@ -36,17 +42,22 @@ private:
 public:
     void OnLanguageChanged();
     std::string FormatTime(double total_seconds);
-    FApplication(const vk::Extent2D& WindowSize, const std::string& WindowTitle, bool bEnableVSync, bool bEnableFullscreen);
+    FApplication(const vk::Extent2D& WindowSize, const std::string& WindowTitle, bool bEnableVSync,
+                 bool bEnableFullscreen, bool enableValidation = false);
     ~FApplication();
 
     void Quit();
 
-    void ExecuteMainRender();
+    std::uint64_t ExecuteMainRender(std::uint64_t maxFrames = 0, bool smokeResize = false);
     void Terminate();
     void Command(const std::string& command);
 private:
     bool InitializeWindow();
     void InitializeInputCallbacks();
+    void SetCursorMode(bool disabled);
+    bool WaitForDrawableFramebuffer();
+    void CheckFramebufferPixelLimit() const;
+    void RebuildSwapchain();
     void ProcessInput();
     void update();
     void RenderDebugUI();
@@ -70,12 +81,19 @@ private:
     //void Quit();
 private:
     Runtime::Graphics::FVulkanContext*        _VulkanContext;
+    Runtime::Asset::FAssetManager*             _AssetManager = nullptr;
 
     std::string                               _WindowTitle;
     vk::Extent2D                              _WindowSize;
     GLFWwindow*                               _Window = nullptr;
     bool                                      _bEnableVSync;
     bool                                      _bEnableFullscreen;
+    bool                                      _bEnableValidation;
+    bool                                      _bGlfwInitialized = false;
+    bool                                      _bFramebufferResized = false;
+    vk::Extent2D                              _FramebufferSize{};
+    std::uint64_t                             _SmokeMaxPixels = 0;
+    std::uint64_t                             _SwapchainRebuildCount = 0;
 
     std::unique_ptr<Runtime::Graphics::FVulkanUIRenderer> _uiRenderer;
     std::unique_ptr<Npgs::System::UI::ScreenManager> m_screen_manager;
@@ -101,7 +119,7 @@ private:
     double RealityTime = 0.0;
     double GameTime = 0.0;
     double TimeRate = 1.0;
-    double PreviousTime = glfwGetTime();
+    double PreviousTime = 0.0;
     double LastFrameTime = 0.0;
     int    FramePerSec= 0;
     long long int  FrameCount = 0;

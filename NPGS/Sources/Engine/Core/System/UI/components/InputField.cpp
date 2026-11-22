@@ -95,9 +95,9 @@ int InputField::GetCharIndexAt(float local_x)
     ImFont* font = GetFont();
     // 必须临时 Push 字体以确保 CalcTextSize 准确
     bool pop_font = false;
-    if (ImGui::GetFont() != font)
+    if (ImGui::GetFont() != font || ImGui::GetStyle().FontSizeBase != UIContext::Get().GetFontBaseSize(font))
     {
-        ImGui::PushFont(font);
+        ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
         pop_font = true;
     }
 
@@ -219,7 +219,7 @@ ImVec2 InputField::Measure(ImVec2 available_size)
     if (m_height.IsContent())
     {
         // 高度 = 字体高度 + 下划线间距 + 下划线厚度(1.0f)
-        m_desired_size.y = font->FontSize + m_underline_spacing + 1.0f;
+        m_desired_size.y = UIContext::Get().GetFontSize(font) + m_underline_spacing + 1.0f;
     }
     else // Fixed
     {
@@ -229,7 +229,7 @@ ImVec2 InputField::Measure(ImVec2 available_size)
     // --- 宽度计算 ---
     if (m_width.IsContent() && m_target_string)
     {
-        m_desired_size.x = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, m_target_string->c_str()).x;
+        m_desired_size.x = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.f, m_target_string->c_str()).x;
     }
     else if (m_width.IsFixed())
     {
@@ -247,7 +247,7 @@ void InputField::Draw(ImDrawList* draw_list)
 {
     if (!m_visible || m_alpha <= 0.01f) return;
     ImFont* font = GetFont();
-    ImGui::PushFont(font);
+    ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
 
     float font_size = ImGui::GetFontSize();
     float draw_y = m_absolute_pos.y;

@@ -52,7 +52,7 @@ public:
             if (!m_label.empty())
             {
                 ImFont* font = UIContext::Get().m_font_small ? UIContext::Get().m_font_small : ImGui::GetFont();
-                total_h += font->FontSize + m_label_spacing;
+                total_h += UIContext::Get().GetFontSize(font) + m_label_spacing;
             }
             m_desired_size.y = total_h;
         }
@@ -65,7 +65,7 @@ public:
         else if (m_width.IsContent() && !m_label.empty())
         {
             ImFont* font = UIContext::Get().m_font_small ? UIContext::Get().m_font_small : ImGui::GetFont();
-            m_desired_size.x = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, m_label.c_str()).x;
+            m_desired_size.x = font->CalcTextSizeA(UIContext::Get().GetFontSize(font), FLT_MAX, 0.f, m_label.c_str()).x;
         }
         else
         {
@@ -90,9 +90,9 @@ public:
             ImFont* font = UIContext::Get().m_font_small;
             if (!font) font = ImGui::GetFont();
 
-            if (font) ImGui::PushFont(font);
+            if (font) ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
             dl->AddText(m_absolute_pos, col_text, m_label.c_str());
-            text_h_with_spacing = font->FontSize + m_label_spacing;
+            text_h_with_spacing = UIContext::Get().GetFontSize(font) + m_label_spacing;
             if (font) ImGui::PopFont();
         }
 

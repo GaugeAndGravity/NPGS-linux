@@ -1,5 +1,8 @@
 #include "Camera.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "Engine/Core/Base/Assert.h"
 
 _NPGS_BEGIN
@@ -230,7 +233,7 @@ void FCamera::ProcessTimeEvolution(double DeltaTime)
         _DistanceToOrbitalCenter += (_ObjectivetTargetDistanceToOrbitalCenter - _DistanceToOrbitalCenter) * std::min(1.0, _OrbitDistanceRotationSmoothCoefficient * DeltaTime);
         if (glm::length(_ObjectivetAxisDir - _AxisDir) > 0 && abs(asin(glm::length((_ObjectivetAxisDir - _AxisDir)) / 2.0f)) > 1e-10)
         {
-            _AxisDir = glm::normalize(_AxisDir + (std::min(1.0f, _OrbitAxisChangeSmoothCoefficient * static_cast<float>(DeltaTime)) * 2.0f * asin(glm::length((_ObjectivetAxisDir - _AxisDir)) / 2.0f) * glm::normalize(glm::cross(glm::cross(_AxisDir, (_ObjectivetAxisDir - _AxisDir)), _AxisDir))));
+            _AxisDir = glm::normalize(_AxisDir + (std::min(1.0f, _OrbitAxisChangeSmoothCoefficient * static_cast<float>(DeltaTime)) * 2.0f * std::asin(glm::length((_ObjectivetAxisDir - _AxisDir)) / 2.0f) * glm::normalize(glm::cross(glm::cross(_AxisDir, (_ObjectivetAxisDir - _AxisDir)), _AxisDir))));
         }
         _OrbitalCenter += (_ObjectivetOrbitalCenter - _OrbitalCenter) * std::min(1.0f, _OrbitCenterChangeSmoothCoefficient * static_cast<float>(DeltaTime));
 

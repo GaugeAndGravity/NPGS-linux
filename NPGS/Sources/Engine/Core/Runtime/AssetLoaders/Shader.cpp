@@ -4,12 +4,16 @@
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
+#include <limits>
 #include <set>
+#include <stdexcept>
 #include <utility>
 
 #include <spirv_cross/spirv_reflect.hpp>
+#include <vulkan/vulkan_to_string.hpp>
 
 #include "Engine/Core/Base/Config/EngineConfig.h"
 #include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
@@ -185,10 +189,25 @@ std::vector<vk::PipelineShaderStageCreateInfo> FShader::CreateShaderStageCreateI
 
 std::vector<vk::DescriptorSetLayout> FShader::GetDescriptorSetLayouts() const
 {
-    std::vector<vk::DescriptorSetLayout> NativeTypeLayouts;
+    if (_DescriptorSetLayoutsMap.size() > std::numeric_limits<std::uint32_t>::max())
+    {
+        throw std::overflow_error("Descriptor set layout count exceeds uint32_t.");
+    }
+    std::vector<vk::DescriptorSetLayout> NativeTypeLayouts(_DescriptorSetLayoutsMap.size());
     for (const auto& [Set, Layout] : _DescriptorSetLayoutsMap)
     {
-        NativeTypeLayouts.push_back(*Layout);
+        // Vulkan uses the array index as the set number, not map iteration order.
+        if (Set >= NativeTypeLayouts.size())
+        {
+            throw std::runtime_error(std::format(
+                "Descriptor set layouts must be contiguous from set 0: set {} with {} layouts",
+                Set, NativeTypeLayouts.size()));
+        }
+        if (!Layout)
+        {
+            throw std::runtime_error(std::format("Null descriptor set layout for set {}", Set));
+        }
+        NativeTypeLayouts[Set] = *Layout;
     }
 
     return NativeTypeLayouts;
@@ -504,7 +523,12 @@ void FShader::CreateDescriptors()
     for (const auto& [Set, Bindings] : _ReflectionInfo.DescriptorSetBindings)
     {
         vk::DescriptorSetLayoutCreateInfo LayoutCreateInfo({}, Bindings);
-        _DescriptorSetLayoutsMap.emplace(Set, LayoutCreateInfo);
+        auto [LayoutIt, Inserted] = _DescriptorSetLayoutsMap.emplace(Set, LayoutCreateInfo);
+        if (LayoutIt->second.GetStatus() != vk::Result::eSuccess || !LayoutIt->second)
+        {
+            throw std::runtime_error(std::format("Failed to create descriptor set layout for set {}: {}",
+                                                Set, vk::to_string(LayoutIt->second.GetStatus())));
+        }
 
         NpgsCoreTrace("Created descriptor set layout for set {} with {} bindings", Set, Bindings.size());
     }
@@ -514,6 +538,8 @@ void FShader::CreateDescriptors()
     {
         for (const auto& Binding : Bindings)
         {
+            std::uint64_t DescriptorCount =
+                std::uint64_t{ Binding.descriptorCount } * Config::Graphics::kMaxFrameInFlight;
             auto it = std::find_if(PoolSizes.begin(), PoolSizes.end(), [&Binding](const vk::DescriptorPoolSize& Size) -> bool
             {
                 return Size.type == Binding.descriptorType;
@@ -521,26 +547,57 @@ void FShader::CreateDescriptors()
 
             if (it != PoolSizes.end())
             {
-                it->descriptorCount += Config::Graphics::kMaxFrameInFlight;
+                DescriptorCount += it->descriptorCount;
+            }
+            if (DescriptorCount == 0 || DescriptorCount > std::numeric_limits<std::uint32_t>::max())
+            {
+                throw std::overflow_error(std::format(
+                    "Invalid descriptor pool count {} for type {} at set {}, binding {}",
+                    DescriptorCount, vk::to_string(Binding.descriptorType), Set, Binding.binding));
+            }
+            if (it != PoolSizes.end())
+            {
+                it->descriptorCount = static_cast<std::uint32_t>(DescriptorCount);
             }
             else
             {
-                PoolSizes.emplace_back(Binding.descriptorType, Config::Graphics::kMaxFrameInFlight);
+                PoolSizes.emplace_back(Binding.descriptorType, static_cast<std::uint32_t>(DescriptorCount));
             }
         }
     }
 
+    static_assert(Config::Graphics::kMaxFrameInFlight > 0);
+    if (_ReflectionInfo.DescriptorSetBindings.size() >
+        std::numeric_limits<std::uint32_t>::max() / Config::Graphics::kMaxFrameInFlight)
+    {
+        throw std::overflow_error("Descriptor pool maxSets exceeds uint32_t.");
+    }
     std::uint32_t MaxSets =
         static_cast<std::uint32_t>(_ReflectionInfo.DescriptorSetBindings.size() * Config::Graphics::kMaxFrameInFlight);
 
     vk::DescriptorPoolCreateInfo PoolCreateInfo({}, MaxSets, PoolSizes);
     _DescriptorPool = std::make_unique<Graphics::FVulkanDescriptorPool>(PoolCreateInfo);
+    if (_DescriptorPool->GetStatus() != vk::Result::eSuccess || !*_DescriptorPool)
+    {
+        throw std::runtime_error(std::format("Failed to create descriptor pool (maxSets={}): {}",
+                                            MaxSets, vk::to_string(_DescriptorPool->GetStatus())));
+    }
 
     for (const auto& [Set, Layout] : _DescriptorSetLayoutsMap)
     {
         std::vector<Graphics::FVulkanDescriptorSet> Sets(Config::Graphics::kMaxFrameInFlight);
         std::vector<vk::DescriptorSetLayout> Layouts(Config::Graphics::kMaxFrameInFlight, *Layout);
-        _DescriptorPool->AllocateSets(Layouts, Sets);
+        vk::Result Result = _DescriptorPool->AllocateSets(Layouts, Sets);
+        if (Result != vk::Result::eSuccess)
+        {
+            throw std::runtime_error(std::format("Failed to allocate {} descriptor sets for set {}: {}",
+                                                Layouts.size(), Set, vk::to_string(Result)));
+        }
+        if (Sets.size() != Layouts.size() ||
+            std::any_of(Sets.begin(), Sets.end(), [](const auto& DescriptorSet) { return !DescriptorSet; }))
+        {
+            throw std::runtime_error(std::format("Descriptor allocation returned invalid handles for set {}", Set));
+        }
 
         NpgsCoreTrace("Allocated {} descriptor sets for set {}", Sets.size(), Set);
         _DescriptorSetsMap[Set] = std::move(Sets);
@@ -549,21 +606,43 @@ void FShader::CreateDescriptors()
 
 void FShader::UpdateDescriptorSets(std::uint32_t FrameIndex)
 {
+    static_assert(Config::Graphics::kMaxFrameInFlight <= std::numeric_limits<std::uint32_t>::digits);
+    if (FrameIndex >= Config::Graphics::kMaxFrameInFlight)
+    {
+        throw std::out_of_range(std::format("Invalid descriptor frame {}", FrameIndex));
+    }
     if ((_DescriptorSetsUpdateMask & (1u << FrameIndex)) == 0)
     {
         return;
     }
 
-    _DescriptorSets[FrameIndex].clear();
+    if (_DescriptorSetsMap.size() != _DescriptorSetLayoutsMap.size())
+    {
+        throw std::runtime_error("Descriptor set count does not match descriptor set layout count.");
+    }
+    std::vector<vk::DescriptorSet> OrderedSets(_DescriptorSetsMap.size());
 
     for (const auto& [Set, DescriptorSets] : _DescriptorSetsMap)
     {
-        if (FrameIndex < DescriptorSets.size())
+        if (Set >= OrderedSets.size())
         {
-            _DescriptorSets[FrameIndex].push_back(*DescriptorSets[FrameIndex]);
+            throw std::runtime_error(std::format(
+                "Descriptor sets must be contiguous from set 0: set {} with {} sets",
+                Set, OrderedSets.size()));
         }
+        if (FrameIndex >= DescriptorSets.size())
+        {
+            throw std::out_of_range(std::format("Missing descriptor frame {} for set {}", FrameIndex, Set));
+        }
+        if (!DescriptorSets[FrameIndex])
+        {
+            throw std::runtime_error(std::format("Null descriptor set {} for frame {}", Set, FrameIndex));
+        }
+        OrderedSets[Set] = *DescriptorSets[FrameIndex];
     }
 
+    // Publish only a complete, validated array; failed updates remain dirty.
+    _DescriptorSets[FrameIndex] = std::move(OrderedSets);
     _DescriptorSetsUpdateMask &= ~(1u << FrameIndex);
 }
 

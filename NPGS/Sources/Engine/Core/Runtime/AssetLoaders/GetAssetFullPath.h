@@ -17,6 +17,14 @@ enum class EAssetType
     kTexture       // 纹理
 };
 
+// Absolute, executable-relative asset root. NPGS_ASSET_DIR overrides discovery;
+// an invalid explicit override throws std::runtime_error (never falls back).
+std::string GetAssetRoot();
+
+// Resolve a path relative to Assets (e.g. "UI/main_menu.json").
+// Does not require the final path to exist: callers also use directory prefixes.
+std::string GetAssetPath(const std::string& RelativePath);
+
 std::string GetAssetFullPath(EAssetType Type, const std::string& Filename);
 
 _ASSET_END

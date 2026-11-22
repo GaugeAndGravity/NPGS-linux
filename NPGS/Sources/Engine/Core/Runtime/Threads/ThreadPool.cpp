@@ -1,8 +1,10 @@
 #include "ThreadPool.h"
 
-#include <cstdint>
-#include <cstdlib>
-#include <Windows.h>
+#include <cerrno>
+#include <stdexcept>
+#include <system_error>
+
+#include <sched.h>
 
 _NPGS_BEGIN
 _RUNTIME_BEGIN
@@ -10,28 +12,30 @@ _THREAD_BEGIN
 
 namespace
 {
-    int GetPhysicalCoreCount()
+    int GetAllowedCpuCount()
     {
-        DWORD Length = 0;
-        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &Length);
-        std::vector<std::uint8_t> Buffer(Length);
-        auto* BufferPtr = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Buffer.data());
-        GetLogicalProcessorInformationEx(RelationProcessorCore, BufferPtr, &Length);
-
-        int CoreCount = 0;
-        while (Length > 0)
+        // Grow the mask for systems with more CPUs than CPU_SETSIZE. Workers
+        // inherit this mask; let the scheduler place them instead of pinning.
+        std::vector<cpu_set_t> AllowedCpus(1);
+        for (;;)
         {
-            if (BufferPtr->Relationship == RelationProcessorCore)
+            const std::size_t MaskSize = AllowedCpus.size() * sizeof(cpu_set_t);
+            if (sched_getaffinity(0, MaskSize, AllowedCpus.data()) == 0)
             {
-                ++CoreCount;
+                const int CpuCount = CPU_COUNT_S(MaskSize, AllowedCpus.data());
+                if (CpuCount == 0)
+                {
+                    throw std::runtime_error("The process has no allowed CPUs.");
+                }
+                return CpuCount;
             }
 
-            Length -= BufferPtr->Size;
-            BufferPtr = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
-                reinterpret_cast<std::uint8_t*>(BufferPtr) + BufferPtr->Size);
+            if (errno != EINVAL)
+            {
+                throw std::system_error(errno, std::generic_category(), "sched_getaffinity");
+            }
+            AllowedCpus.resize(AllowedCpus.size() * 2);
         }
-
-        return CoreCount;
     }
 }
 
@@ -40,33 +44,39 @@ namespace
 FThreadPool::FThreadPool()
     :
     _Terminate(false),
-    _kMaxThreadCount(GetPhysicalCoreCount()),
-    _kPhysicalCoreCount(GetPhysicalCoreCount())
+    _kMaxThreadCount(GetAllowedCpuCount())
 {
-    for (std::size_t i = 0; i != _kPhysicalCoreCount; ++i)
+    _Threads.reserve(_kMaxThreadCount);
+    try
     {
-        _Threads.emplace_back([this]() -> void
+        for (int i = 0; i != _kMaxThreadCount; ++i)
         {
-            while (true)
+            _Threads.emplace_back([this]() -> void
             {
-                std::function<void()> Task;
+                while (true)
                 {
-                    std::unique_lock<std::mutex> Mutex(_Mutex);
-                    _Condition.wait(Mutex, [this]() -> bool { return !_Tasks.empty() || _Terminate; });
-                    if (_Terminate && _Tasks.empty())
+                    std::function<void()> Task;
                     {
-                        return;
+                        std::unique_lock<std::mutex> Mutex(_Mutex);
+                        _Condition.wait(Mutex, [this]() -> bool { return !_Tasks.empty() || _Terminate; });
+                        if (_Terminate && _Tasks.empty())
+                        {
+                            return;
+                        }
+
+                        Task = std::move(_Tasks.front());
+                        _Tasks.pop();
                     }
 
-                    Task = std::move(_Tasks.front());
-                    _Tasks.pop();
+                    Task();
                 }
-
-                Task();
-            }
-        });
-
-        SetThreadAffinity(_Threads.back(), i);
+            });
+        }
+    }
+    catch (...)
+    {
+        Terminate();
+        throw;
     }
 }
 
@@ -95,14 +105,6 @@ FThreadPool* FThreadPool::GetInstance()
 {
     static FThreadPool kInstance;
     return &kInstance;
-}
-
-void FThreadPool::SetThreadAffinity(std::thread& Thread, std::size_t CoreId) const
-{
-    HANDLE Handle = Thread.native_handle();
-    DWORD_PTR Mask = 0;
-    Mask = static_cast<DWORD_PTR>(Bit(CoreId * 2) + _kHyperThreadIndex);
-    SetThreadAffinityMask(Handle, Mask);
 }
 
 _THREAD_END

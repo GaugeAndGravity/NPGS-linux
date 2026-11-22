@@ -2,10 +2,21 @@
 
 #include <random>
 #include <type_traits>
+#include <vector>
 #include "Engine/Core/Base/Base.h"
 
 _NPGS_BEGIN
 _UTIL_BEGIN
+
+inline std::mt19937 MakeRandomEngine(const std::seed_seq& SeedSequence)
+{
+    // generate() is non-const; reconstruct the same sequence from its
+    // parameters without changing the caller's seed sequence.
+    std::vector<std::seed_seq::result_type> Seeds(SeedSequence.size());
+    SeedSequence.param(Seeds.begin());
+    std::seed_seq LocalSequence(Seeds.begin(), Seeds.end());
+    return std::mt19937(LocalSequence);
+}
 
 template <typename BaseType = float, typename RandomEngine = std::mt19937>
 requires std::is_class_v<RandomEngine>

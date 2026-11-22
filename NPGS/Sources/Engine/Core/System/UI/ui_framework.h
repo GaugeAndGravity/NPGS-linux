@@ -172,6 +172,33 @@ public:
     ImFont* m_font_small = nullptr;
     ImFont* m_font_subtitle = nullptr;
 
+    static constexpr float FontSizeRegular = 16.0f;
+    static constexpr float FontSizeBold = 18.0f;
+    static constexpr float FontSizeLarge = 24.0f;
+    static constexpr float FontSizeSmall = 12.0f;
+    static constexpr float FontSizeSubtitle = 22.0f;
+
+    // Logical sizes are independent of the framebuffer's rasterization density.
+    float GetFontBaseSize(ImFont* font) const
+    {
+        if (font && font == m_font_small) return FontSizeSmall;
+        if (font && font == m_font_bold) return FontSizeBold;
+        if (font && font == m_font_large) return FontSizeLarge;
+        if (font && font == m_font_subtitle) return FontSizeSubtitle;
+        if (font && font == m_font_regular) return FontSizeRegular;
+        return font ? font->LegacySize : FontSizeRegular;
+    }
+
+    float GetFontSize(ImFont* font) const
+    {
+        // Ask ImGui to apply its scale factors and size rounding exactly once.
+        // Never feed this effective measurement size back into PushFont().
+        ImGui::PushFont(font, GetFontBaseSize(font));
+        const float Size = ImGui::GetFontSize();
+        ImGui::PopFont();
+        return Size;
+    }
+
     // 全局资源
     ImTextureID m_scene_blur_texture = 0; // 用于毛玻璃效果的背景模糊贴图
     ImVec2 m_display_size = { 1920, 1080 };

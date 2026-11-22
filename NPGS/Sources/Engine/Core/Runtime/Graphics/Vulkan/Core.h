@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_handles.hpp>
 #include "Engine/Core/Base/Base.h"
 
@@ -47,7 +47,14 @@ public:
     vk::Result CreateInstance(vk::InstanceCreateFlags Flags);
     vk::Result CreateDevice(std::uint32_t PhysicalDeviceIndex, vk::DeviceCreateFlags Flags);
     vk::Result RecreateDevice(std::uint32_t PhysicalDeviceIndex, vk::DeviceCreateFlags Flags);
+    // Terminal, explicit teardown before main returns / layer globals disappear.
+    vk::Result Shutdown() noexcept;
+    bool IsShutdown() const noexcept;
     void SetSurface(vk::SurfaceKHR Surface);
+    // Call before destroying the native window/display. Keeps device/VMA alive.
+    vk::Result ReleaseSurface() noexcept;
+    // Framebuffer pixels, not logical window coordinates. Zero suspends WSI.
+    void SetFramebufferSize(vk::Extent2D Extent);
     vk::Result SetSurfaceFormat(const vk::SurfaceFormatKHR& SurfaceFormat);
     vk::Result CreateSwapchain(vk::Extent2D Extent, bool bLimitFps, vk::SwapchainCreateFlagsKHR Flags);
     vk::Result RecreateSwapchain();
@@ -117,6 +124,7 @@ private:
     vk::Result ObtainPhysicalDeviceSurfaceFormats();
     vk::Result CreateSwapchainInternal();
     vk::Result InitializeVmaAllocator();
+    vk::Result ReleaseSurfaceInternal(bool bWaitForDevice) noexcept;
 
 private:
     std::vector<std::pair<std::string, std::function<void()>>> _CreateDeviceCallbacks;
@@ -143,12 +151,13 @@ private:
     vk::Queue                          _ComputeQueue;
     vk::SwapchainKHR                   _Swapchain;
 
-    VmaAllocator                       _VmaAllocator;
+    VmaAllocator                       _VmaAllocator{};
 
     vk::PhysicalDeviceProperties       _PhysicalDeviceProperties;
     vk::PhysicalDeviceMemoryProperties _PhysicalDeviceMemoryProperties;
     vk::SwapchainCreateInfoKHR		   _SwapchainCreateInfo;
     vk::Extent2D                       _SwapchainExtent;
+    vk::Extent2D                       _FramebufferSize;
 
     std::uint32_t                      _GraphicsQueueFamilyIndex;
     std::uint32_t                      _PresentQueueFamilyIndex;
@@ -156,6 +165,10 @@ private:
     std::uint32_t                      _CurrentImageIndex;
 
     std::uint32_t                      _ApiVersion;
+    bool                               _bValidationFailFast{ false };
+    bool                               _bShuttingDown{ false };
+    bool                               _bShutdown{ false };
+    vk::Result                         _ShutdownResult{ vk::Result::eSuccess };
 };
 
 _GRAPHICS_END

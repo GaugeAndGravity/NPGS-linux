@@ -3,6 +3,7 @@
 #include "../../../../../Program/Application.h"
 #include "../UILoader.h"
 #include "../UIFactory.h"
+#include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
 
 _NPGS_BEGIN
 _SYSTEM_BEGIN
@@ -62,7 +63,7 @@ void MainMenuScreen::OnEnter()
     });
 
     // 3. 加载UI树
-    m_ui_root = loader.LoadFromFile("Assets/UI/main_menu.json");
+    m_ui_root = loader.LoadFromFile(Runtime::Asset::GetAssetPath("UI/main_menu.json"));
     if (!m_ui_root)
     {
         m_ui_root = std::make_shared<UIRoot>();

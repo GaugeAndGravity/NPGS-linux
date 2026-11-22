@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_format_traits.hpp>
 #include <vulkan/vulkan_handles.hpp>
 
@@ -47,16 +47,19 @@ public:
 
 public:
     FGraphicsPipelineCreateInfoPack();
-    FGraphicsPipelineCreateInfoPack(const FGraphicsPipelineCreateInfoPack&) = default;
+    FGraphicsPipelineCreateInfoPack(const FGraphicsPipelineCreateInfoPack& Other);
     FGraphicsPipelineCreateInfoPack(FGraphicsPipelineCreateInfoPack&& Other) noexcept;
     ~FGraphicsPipelineCreateInfoPack() = default;
 
-    FGraphicsPipelineCreateInfoPack& operator=(const FGraphicsPipelineCreateInfoPack&) = default;
+    FGraphicsPipelineCreateInfoPack& operator=(const FGraphicsPipelineCreateInfoPack& Other);
     FGraphicsPipelineCreateInfoPack& operator=(FGraphicsPipelineCreateInfoPack&& Other) noexcept;
 
     operator vk::GraphicsPipelineCreateInfo& ();
     operator const vk::GraphicsPipelineCreateInfo& () const;
 
+    // Relink owned state/vector storage after edits. Shader stages, render
+    // targets and static viewport/scissor (or their dynamic states) are supplied
+    // by the caller. External pNext/sample-mask/specialization data stay borrowed.
     void Update();
 
 private:
@@ -610,17 +613,17 @@ private:
     vk::DeviceSize AlignNonCoherentMemoryRange(vk::DeviceSize& Offset, vk::DeviceSize& Size) const;
 
 private:
-    VmaAllocator                              _Allocator;
-    VmaAllocation                             _Allocation;
-    VmaAllocationInfo                         _AllocationInfo;
+    VmaAllocator                              _Allocator{};
+    VmaAllocation                             _Allocation{};
+    VmaAllocationInfo                         _AllocationInfo{};
     const vk::PhysicalDeviceProperties*       _PhysicalDeviceProperties;
     const vk::PhysicalDeviceMemoryProperties* _PhysicalDeviceMemoryProperties;
     void*                                     _MappedDataMemory;
     void*                                     _MappedTargetMemory;
-    vk::DeviceSize                            _AllocationSize;
+    vk::DeviceSize                            _AllocationSize{};
     vk::MemoryPropertyFlags                   _MemoryPropertyFlags;
-    bool                                      _bPersistentlyMapped;
-    bool                                      _bHostingVma;
+    bool                                      _bPersistentlyMapped{};
+    bool                                      _bHostingVma{};
 
     static std::unordered_map<vk::DeviceMemory, std::size_t, FVulkanDeviceMemoryHash> _HandleTracker;
 };
@@ -655,9 +658,9 @@ private:
 
 private:
     const vk::PhysicalDeviceMemoryProperties* _PhysicalDeviceMemoryProperties;
-    VmaAllocator                              _Allocator;
-    VmaAllocation                             _Allocation;
-    VmaAllocationInfo                         _AllocationInfo;
+    VmaAllocator                              _Allocator{};
+    VmaAllocation                             _Allocation{};
+    VmaAllocationInfo                         _AllocationInfo{};
 };
 
 // Wrapper for vk::BufferView
@@ -820,9 +823,9 @@ private:
 
 private:
     const vk::PhysicalDeviceMemoryProperties* _PhysicalDeviceMemoryProperties;
-    VmaAllocator                              _Allocator;
-    VmaAllocation                             _Allocation;
-    VmaAllocationInfo                         _AllocationInfo;
+    VmaAllocator                              _Allocator{};
+    VmaAllocation                             _Allocation{};
+    VmaAllocationInfo                         _AllocationInfo{};
 };
 
 // Wrapper for vk::ImageView

@@ -1,5 +1,7 @@
 // C++ includes used for precompiling -*- C++ -*-
 
+#pragma once
+
 // Copyright (C) 2003-2024 Free Software Foundation, Inc.
 //
 // This file is part of the GNU ISO C++ Library.  This library is free
@@ -23,7 +25,7 @@
 // <http://www.gnu.org/licenses/>.
 
 /** @file xstdafx.h
- *  This is an modified implementation for Visual Studio.
+ *  Shared standard-library headers for the C++23 precompiled header.
  */
 
 // 17.4.1.2 Headers
@@ -33,7 +35,6 @@
 #include <cctype>
 #include <cerrno>
 #include <cfloat>
-#include <ciso646>
 #include <climits>
 #include <clocale>
 #include <cmath>
@@ -48,16 +49,10 @@
 #include <cwchar>
 #include <cwctype>
 
-#if _MSVC_LANG >= 201103L
-#include <ccomplex>
 #include <cfenv>
 #include <cinttypes>
-#include <cstdalign>
-#include <cstdbool>
 #include <cstdint>
-#include <ctgmath>
 #include <cuchar>
-#endif
 
 // C++
 #include <algorithm>
@@ -93,11 +88,9 @@
 #include <valarray>
 #include <vector>
 
-#if _MSVC_LANG >= 201103L
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <codecvt>
 #include <condition_variable>
 #include <forward_list>
 #include <future>
@@ -114,24 +107,14 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
-#endif
-
-#if _MSVC_LANG >= 201402L
 #include <shared_mutex>
-#endif
-
-#if _MSVC_LANG >= 201703L
 #include <any>
 #include <charconv>
-#include <execution>
 #include <filesystem>
 #include <memory_resource>
 #include <optional>
 #include <string_view>
 #include <variant>
-#endif
-
-#if _MSVC_LANG >= 202002L
 #include <barrier>
 #include <bit>
 #include <compare>
@@ -146,27 +129,7 @@
 #include <stop_token>
 #include <syncstream>
 #include <version>
-#endif
-
-#if _MSVC_LANG > 202002L
-#if __cpp_impl_coroutine
-# include <coroutine>
-#endif
+#include <coroutine>
 #include <expected>
-#if __has_include(<generator>)
-# include <generator>
-#endif
 #include <print>
 #include <spanstream>
-#if __has_include(<stacktrace>)
-# include <stacktrace>
-#endif
-#include <stdatomic.h>
-#include <stdfloat>
-#endif
-
-#if _MSVC_LANG > 202302L
-#if __has_include(<text_encoding>)
-# include <text_encoding>
-#endif
-#endif

@@ -1,9 +1,15 @@
 //baopinsui的话：这个部分充满不规范的一次性代码，（因为这不是我的强项)，目前我最得意的作品请见blackhole_common.glsl
 #include "Application.h"
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
+#include <pwd.h>
+#include <stdexcept>
+#include <unistd.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_aligned.hpp>
@@ -12,6 +18,7 @@
 #include "Engine/Core/Base/Config/EngineConfig.h"
 #include "Engine/Core/Math/NumericConstants.h"
 #include "Engine/Core/Runtime/AssetLoaders/AssetManager.h"
+#include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
 #include "Engine/Core/Runtime/AssetLoaders/Shader.h"
 #include "Engine/Core/Runtime/AssetLoaders/Texture.h"
 #include "Engine/Core/Runtime/Graphics/Renderers/PipelineManager.h"
@@ -27,7 +34,9 @@
 #include <chrono>
 #include <fstream>
 #include <sstream>
+#ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
+#endif
 #include <glm/gtx/string_cast.hpp> 
 // 在 Application.cpp 的 #include 区域添加
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -58,6 +67,117 @@ FBlackHoleArgs BlackHoleArgs{};
 static double g_GeoState[20];
 static bool g_isOutgoing = false;
 static double g_UniverseSign = 1.0;
+
+namespace
+{
+std::uint64_t ReadSmokeMaxPixels()
+{
+    const char* text = std::getenv("NPGS_SMOKE_MAX_PIXELS");
+    if (!text)
+        return 0; // Unset: no diagnostic size limit.
+    const char* end = text + std::strlen(text);
+    std::uint64_t limit = 0;
+    const auto result = std::from_chars(text, end, limit, 10);
+    if (result.ec != std::errc{} || result.ptr != end || limit == 0)
+        throw std::runtime_error("NPGS_SMOKE_MAX_PIXELS must be a positive decimal uint64: '" +
+                                 std::string(text) + "'");
+    return limit;
+}
+
+void ValidateFramebufferPixelLimit(vk::Extent2D framebuffer, std::uint64_t limit)
+{
+    const std::uint64_t pixels = std::uint64_t(framebuffer.width) * std::uint64_t(framebuffer.height);
+    if (limit != 0 && pixels > limit)
+    {
+        throw std::runtime_error("NPGS_SMOKE_MAX_PIXELS exceeded: actual GLFW framebuffer " +
+            std::to_string(framebuffer.width) + "x" + std::to_string(framebuffer.height) +
+            " = " + std::to_string(pixels) + " pixels, limit " + std::to_string(limit) +
+            "; refusing rendering/resource rebuild. This diagnostic limit is not a Vulkan safety guarantee.");
+    }
+}
+
+std::filesystem::path GetUserStateDirectory()
+{
+    std::filesystem::path root;
+    if (const char* state = std::getenv("XDG_STATE_HOME"); state && *state &&
+        std::filesystem::path(state).is_absolute())
+    {
+        root = state;
+    }
+    else
+    {
+        const char* home = std::getenv("HOME");
+        if (!home || !*home)
+        {
+            const passwd* user = getpwuid(getuid());
+            home = user ? user->pw_dir : nullptr;
+        }
+        if (!home || !*home || !std::filesystem::path(home).is_absolute())
+        {
+            throw std::runtime_error("Cannot determine an absolute home directory for user state.");
+        }
+        root = std::filesystem::path(home) / ".local/state";
+    }
+    root /= "npgs";
+    std::filesystem::create_directories(root);
+    return root;
+}
+
+vk::Format SelectSceneColorFormat(vk::Format format, vk::ColorSpaceKHR colorSpace)
+{
+    if ((format != vk::Format::eR8G8B8A8Unorm && format != vk::Format::eB8G8R8A8Unorm) ||
+        colorSpace != vk::ColorSpaceKHR::eSrgbNonlinear)
+    {
+        throw std::runtime_error("Unsupported presentation color path: " + vk::to_string(format) +
+            " / " + vk::to_string(colorSpace) +
+            "; expected RGBA8/BGRA8 UNORM with SRGB_NONLINEAR. sRGB/HDR output conversion is not implemented.");
+    }
+    return format;
+}
+
+void ValidateUnchangedSceneFormat(vk::Format expectedFormat, vk::ColorSpaceKHR expectedColorSpace,
+                                 vk::Format format, vk::ColorSpaceKHR colorSpace)
+{
+    if (format != expectedFormat || colorSpace != expectedColorSpace)
+    {
+        throw std::runtime_error("Swapchain format/color space changed from " +
+            vk::to_string(expectedFormat) + " / " + vk::to_string(expectedColorSpace) + " to " +
+            vk::to_string(format) + " / " + vk::to_string(colorSpace) +
+            "; format-changing resize requires an ImGui pipeline rebuild and is not implemented.");
+    }
+}
+
+const vk::FormatFeatureFlags kSceneColorFeatures =
+    vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eColorAttachmentBlend |
+    vk::FormatFeatureFlagBits::eSampledImage | vk::FormatFeatureFlagBits::eSampledImageFilterLinear |
+    vk::FormatFeatureFlagBits::eTransferSrc | vk::FormatFeatureFlagBits::eTransferDst |
+    vk::FormatFeatureFlagBits::eBlitSrc;
+
+const vk::FormatFeatureFlags kUIBlurFeatures =
+    vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eSampledImage |
+    vk::FormatFeatureFlagBits::eSampledImageFilterLinear | vk::FormatFeatureFlagBits::eTransferSrc |
+    vk::FormatFeatureFlagBits::eTransferDst | vk::FormatFeatureFlagBits::eBlitSrc |
+    vk::FormatFeatureFlagBits::eBlitDst;
+
+void RequireOptimalFormatFeatures(vk::Format format, const vk::FormatProperties& properties,
+                                 vk::FormatFeatureFlags required, const char* purpose)
+{
+    const auto missing = required & ~properties.optimalTilingFeatures;
+    if (missing)
+    {
+        throw std::runtime_error(std::string(purpose) + " format " + vk::to_string(format) +
+            " lacks required optimal-tiling features: " + vk::to_string(missing));
+    }
+}
+
+void CheckVulkanResult(vk::Result result, const char* operation)
+{
+    if (result != vk::Result::eSuccess)
+    {
+        throw std::runtime_error(std::string(operation) + ": " + vk::to_string(result));
+    }
+}
+}
 
 double g_Q = 0.0; // 对应黑洞的电荷 (Electric Charge)
 double g_P = 0.0; // 对应黑洞的磁荷 (Magnetic Monopole)
@@ -877,27 +997,38 @@ double calculate_KN_ISCO(double M, double a_star, double Q_star)
 }
 
 FApplication::FApplication(const vk::Extent2D& WindowSize, const std::string& WindowTitle,
-    bool bEnableVSync, bool bEnableFullscreen)
+    bool bEnableVSync, bool bEnableFullscreen, bool enableValidation)
     :
     _VulkanContext(Grt::FVulkanContext::GetClassInstance()),
     _WindowTitle(WindowTitle),
     _WindowSize(WindowSize),
     _bEnableVSync(bEnableVSync),
     _bEnableFullscreen(bEnableFullscreen),
+    _bEnableValidation(enableValidation),
     m_beam_energy("1.919 E+30"),
     m_rkkv_mass("5.14 E+13"),
     m_is_beam_button_active(false),
     m_is_rkkv_button_active(false)
 {
-    if (!InitializeWindow())
+    try
     {
-        NpgsCoreError("Failed to create application.");
+        _SmokeMaxPixels = ReadSmokeMaxPixels();
+        if (!InitializeWindow())
+        {
+            throw std::runtime_error("Failed to initialize the Wayland/Vulkan application.");
+        }
+    }
+    catch (...)
+    {
+        Terminate();
+        throw;
     }
 }
 
 FApplication::~FApplication()
 {
     System::I18nManager::Get().UnregisterCallback(this);
+    Terminate();
 }
 void FApplication::Quit()
 {
@@ -1044,8 +1175,24 @@ void FApplication::Command(const std::string& command)
         }
     }
 }
-void FApplication::ExecuteMainRender()
-{    // 初始化 UI 渲染器
+std::uint64_t FApplication::ExecuteMainRender(std::uint64_t maxFrames, bool smokeResize)
+{
+    // Explicit opt-in guard, before UI/font upload or heavy shader initialization.
+    CheckFramebufferPixelLimit();
+    const vk::ColorSpaceKHR SceneColorSpace = _VulkanContext->GetSwapchainCreateInfo().imageColorSpace;
+    // Both cached dynamic-rendering pNext data and resize callbacks refer to
+    // this stable, function-lifetime array. Do not replace it with lambda locals.
+    const std::array<vk::Format, 1> SceneColorFormat{
+        SelectSceneColorFormat(_VulkanContext->GetSwapchainCreateInfo().imageFormat, SceneColorSpace)};
+    const auto physicalDevice = _VulkanContext->GetPhysicalDevice();
+    RequireOptimalFormatFeatures(SceneColorFormat[0], physicalDevice.getFormatProperties(SceneColorFormat[0]),
+        kSceneColorFeatures, "Scene/swapchain");
+    RequireOptimalFormatFeatures(vk::Format::eR8G8B8A8Unorm,
+        physicalDevice.getFormatProperties(vk::Format::eR8G8B8A8Unorm), kUIBlurFeatures, "UI blur");
+    NpgsCoreInfo("Presentation color path: SceneColor/Blend/swapchain format {}, colorSpace {}; "
+        "UI blur format R8G8B8A8Unorm, existing UNORM tone mapping unchanged.",
+        vk::to_string(SceneColorFormat[0]), vk::to_string(SceneColorSpace));
+    // 初始化 UI 渲染器
     _uiRenderer = std::make_unique<Grt::FVulkanUIRenderer>();
     // =========================================================================
     // [修改] UI 初始化逻辑
@@ -1053,8 +1200,7 @@ void FApplication::ExecuteMainRender()
 
     if (!_uiRenderer->Initialize(_Window))
     {
-        NpgsCoreError("Failed to initialize UI renderer");
-        return;
+        throw std::runtime_error("Failed to initialize UI renderer.");
     }
     // using namespace Npgs::System::UI::;
 
@@ -1121,9 +1267,13 @@ void FApplication::ExecuteMainRender()
     if (HalfWindowSize.width == 0) HalfWindowSize.width = 1;
     if (HalfWindowSize.height == 0) HalfWindowSize.height = 1;
 
+    bool bOffscreenImagesUsed = false;
+    bool bHistoryInitialized = false;
     auto CreateFramebuffers = [&]() -> void
     {
-        _VulkanContext->WaitIdle();
+        CheckVulkanResult(_VulkanContext->WaitIdle(), "Waiting to replace offscreen images");
+        bOffscreenImagesUsed = false;
+        bHistoryInitialized = false;
 
         vk::Extent2D HalfWindowSize = { _WindowSize.width / 2, _WindowSize.height / 2 };
         if (HalfWindowSize.width == 0) HalfWindowSize.width = 1;
@@ -1163,7 +1313,7 @@ void FApplication::ExecuteMainRender()
 
 
         SceneColorAttachment = std::make_unique<Grt::FColorAttachment>(
-            vk::Format::eR8G8B8A8Unorm, _WindowSize, 1, vk::SampleCountFlagBits::e1,
+            SceneColorFormat[0], _WindowSize, 1, vk::SampleCountFlagBits::e1,
             vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
             vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst
         );
@@ -1198,9 +1348,16 @@ void FApplication::ExecuteMainRender()
 
     auto DestroyFramebuffers = [&]() -> void
     {
-        _VulkanContext->WaitIdle();
+        CheckVulkanResult(_VulkanContext->WaitIdle(), "Waiting to retire offscreen images");
     };
 
+    _VulkanContext->RegisterAutoRemovedCallbacks(Grt::FVulkanContext::ECallbackType::kCreateSwapchain,
+        "UpdateFramebufferExtent", [this, &SceneColorFormat, SceneColorSpace]()
+        {
+            const auto& info = _VulkanContext->GetSwapchainCreateInfo();
+            ValidateUnchangedSceneFormat(SceneColorFormat[0], SceneColorSpace, info.imageFormat, info.imageColorSpace);
+            _WindowSize = info.imageExtent;
+        });
     CreateFramebuffers();
 
     _VulkanContext->RegisterAutoRemovedCallbacks(Grt::FVulkanContext::ECallbackType::kCreateSwapchain, "CreateFramebuffers", CreateFramebuffers);
@@ -1209,6 +1366,7 @@ void FApplication::ExecuteMainRender()
     // Create pipeline layout
     // ----------------------
     auto* AssetManager = Art::FAssetManager::GetInstance();
+    _AssetManager = AssetManager;
 
     Art::FShader::FResourceInfo QuadResourceInfo
     {
@@ -1287,7 +1445,7 @@ void FApplication::ExecuteMainRender()
         "stage4", TextureAllocationCreateInfo, "stage4.png", vk::Format::eR8G8B8A8Unorm,
         vk::Format::eR8G8B8A8Unorm, vk::ImageCreateFlags(), false, false);
     // ================= [新增] 动态加载 Disk 文件夹下的所有图片 =================
-    std::string diskPath = "Assets/Textures/Disk";
+    std::string diskPath = Art::GetAssetFullPath(Art::EAssetType::kTexture, "Disk");
     if (std::filesystem::exists(diskPath))
     {
         for (const auto& entry : std::filesystem::directory_iterator(diskPath))
@@ -1341,8 +1499,8 @@ void FApplication::ExecuteMainRender()
     Grt::FShaderResourceManager::FUniformBufferCreateInfo BlackHoleArgsCreateInfo
     {
         .Name = "BlackHoleArgs",
-        .Fields = { "InverseCamRot;", "BlackHoleRelativePosRs", "BlackHoleRelativeDiskNormal","BlackHoleRelativeDiskTangen","CameraVelocity","ie1_up","ie1_up","ie2_up","ie3_up","iU_up",
-                    "iCamDataCoordisOutgoing","DEBUG","Prepass","Whitehole","InWhichUniverse","Grid","EnableHeatHaze","EnableShadowCulling", "ObserverMode","Polarization","iUseImageDisk",
+        .Fields = { "InverseCamRot", "BlackHoleRelativePosRs", "BlackHoleRelativeDiskNormal","BlackHoleRelativeDiskTangen","CameraVelocity","ie1_up","ie2_up","ie3_up","iU_up",
+                    "iCamDataCoordisOutgoing","DEBUG","Prepass","Whitehole","InWhichUniverse","Grid","EnableHeatHaze","EnableShadowCulling", "ObserverMode","Polarization","UseImageDisk",
                     "Quality","UniverseSign",
                      "BlackHoleTime","BlackHoleMassSol", "Spin","Q2", "Mu", "AccretionRate","BackShiftMax","DensestarsurfaceR","DensestarBlackbodyIntensityExponent","DensestarRedShiftColorExponent","DensestarRedShiftIntensityExponent","DensestarBrightmut","InterRadiusRs", "OuterRadiusRs","ThinRs","Hopper", "Brightmut","Darkmut","Reddening","Saturation"
                      , "BlackbodyIntensityExponent","RedShiftColorExponent","RedShiftIntensityExponent","ImageRotationSpeed","PolarizationAngle","HeatHaze","BackgroundBrightmut","PhotonRingBoost","PhotonRingColorTempBoost","BoostRot","JetRedShiftIntensityExponent","JetBrightmut","JetSaturation","JetShiftMax","BlendWeight"},
@@ -1374,32 +1532,8 @@ void FApplication::ExecuteMainRender()
 
     auto CreatePostDescriptors = [&]() -> void
     {
-        ImageInfos.clear();
-        ImageInfos.push_back(Background0->CreateDescriptorImageInfo(Sampler));
-        PrepassShader->WriteSharedDescriptors(1, 1, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
-
-        ImageInfos.clear();
-        ImageInfos.push_back(Antiground0->CreateDescriptorImageInfo(Sampler));
-        PrepassShader->WriteSharedDescriptors(1, 2, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
-
-
-        ImageInfos.clear();
-        ImageInfos.push_back(Background1->CreateDescriptorImageInfo(Sampler));
-        PrepassShader->WriteSharedDescriptors(1, 3, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
-
-        ImageInfos.clear();
-        ImageInfos.push_back(Antiground1->CreateDescriptorImageInfo(Sampler));
-        PrepassShader->WriteSharedDescriptors(1, 4, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
-
-
-        ImageInfos.clear();
-        ImageInfos.push_back(Background2->CreateDescriptorImageInfo(Sampler));
-        PrepassShader->WriteSharedDescriptors(1, 5, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
-
-        ImageInfos.clear();
-        ImageInfos.push_back(Antiground2->CreateDescriptorImageInfo(Sampler));
-        PrepassShader->WriteSharedDescriptors(1, 6, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
-
+        // Prepass traces rays but does not sample the background. Its optimized
+        // set 1 contains only the image-disk sampler at binding 9.
         ImageInfos.clear();
         ImageInfos.push_back(NPGSTexture->CreateDescriptorImageInfo(Sampler));
         PrepassShader->WriteSharedDescriptors(1, 9, vk::DescriptorType::eCombinedImageSampler, ImageInfos);
@@ -1490,14 +1624,14 @@ void FApplication::ExecuteMainRender()
         {
             // 1. 注册纹理
             ImTextureID blurTexID = _uiRenderer->AddTexture(
-                *FramebufferSampler, // 复用现有的线性采样器
                 *UIBlurAttachment->GetImageView(),
                 vk::ImageLayout::eShaderReadOnlyOptimal
             );
 
-            // 2. 更新 UIContext
+            // Transfer ownership; the UI renderer retires the previous blur
+            // descriptor after the framebuffer replacement's idle wait.
+            _uiRenderer->SetBlurTexture(blurTexID);
             auto& ctx = Npgs::System::UI::UIContext::Get();
-            ctx.m_scene_blur_texture = blurTexID;
             ctx.m_display_size = ImVec2((float)_WindowSize.width, (float)_WindowSize.height);
         }
 
@@ -1519,32 +1653,26 @@ void FApplication::ExecuteMainRender()
 
 
     ImTextureID RKKVID = _uiRenderer->AddTexture(
-        *FramebufferSampler,
         *RKKV->GetImageView(),
         vk::ImageLayout::eShaderReadOnlyOptimal
     );
     stage0ID = _uiRenderer->AddTexture(
-        *FramebufferSampler,
         *stage0->GetImageView(),
         vk::ImageLayout::eShaderReadOnlyOptimal
     );
     stage1ID = _uiRenderer->AddTexture(
-        *FramebufferSampler,
         *stage1->GetImageView(),
         vk::ImageLayout::eShaderReadOnlyOptimal
     );
     stage2ID = _uiRenderer->AddTexture(
-        *FramebufferSampler,
         *stage2->GetImageView(),
         vk::ImageLayout::eShaderReadOnlyOptimal
     );
     stage3ID = _uiRenderer->AddTexture(
-        *FramebufferSampler,
         *stage3->GetImageView(),
         vk::ImageLayout::eShaderReadOnlyOptimal
     );
     stage4ID = _uiRenderer->AddTexture(
-        *FramebufferSampler,
         *stage4->GetImageView(),
         vk::ImageLayout::eShaderReadOnlyOptimal
     );
@@ -1604,7 +1732,6 @@ void FApplication::ExecuteMainRender()
     PipelineManager->CreateGraphicsPipeline("BlackHoleCompositePipeline", "BlackHoleComposite", CompositeCreateInfoPack);
 
     // 3. Other Pipelines
-    std::array<vk::Format, 1> SceneColorFormat{ vk::Format::eR8G8B8A8Unorm };
     vk::PipelineRenderingCreateInfo BlendRenderingCreateInfo = vk::PipelineRenderingCreateInfo().setColorAttachmentCount(1).setColorAttachmentFormats(SceneColorFormat);
     Grt::FGraphicsPipelineCreateInfoPack BlendCreateInfoPack = CompositeCreateInfoPack; // 复用配置
     // 3. 修改 BlendPipeline 配置
@@ -1649,26 +1776,54 @@ void FApplication::ExecuteMainRender()
     {
         InFlightFences.emplace_back(vk::FenceCreateFlagBits::eSignaled);
         Semaphores_ImageAvailable.emplace_back(vk::SemaphoreCreateFlags());
-        Semaphores_RenderFinished.emplace_back(vk::SemaphoreCreateFlags());
     }
+    // Presentation may still be waiting after a frame fence signals. Reuse its
+    // semaphore only when the corresponding swapchain image is acquired again.
+    auto CreatePresentSemaphores = [&]()
+    {
+        Semaphores_RenderFinished.clear();
+        for (std::uint32_t i = 0; i < _VulkanContext->GetSwapchainImageCount(); ++i)
+        {
+            Semaphores_RenderFinished.emplace_back(vk::SemaphoreCreateFlags());
+        }
+    };
+    CreatePresentSemaphores();
+    _VulkanContext->RegisterAutoRemovedCallbacks(Grt::FVulkanContext::ECallbackType::kCreateSwapchain,
+        "CreatePresentSemaphores", CreatePresentSemaphores);
 
     std::vector<Grt::FVulkanCommandBuffer> GraphicsCommandBuffers(Config::Graphics::kMaxFrameInFlight);
-    _VulkanContext->GetGraphicsCommandPool().AllocateBuffers(vk::CommandBufferLevel::ePrimary, GraphicsCommandBuffers);
+    CheckVulkanResult(_VulkanContext->GetGraphicsCommandPool().AllocateBuffers(
+        vk::CommandBufferLevel::ePrimary, GraphicsCommandBuffers), "Allocating frame command buffers");
 
     vk::DeviceSize Offset = 0;
     std::uint32_t  CurrentFrame = 0;
+    Grt::FVulkanFence* PreviousFrameFence = nullptr;
     vk::ImageSubresourceRange SubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
 
-    // Init History Frame (保持不变)
+    // A layout transition alone leaves history texels undefined.
     auto InitHistoryFrame = [&]() -> void
     {
-        vk::ImageMemoryBarrier2 InitHistoryBarrier(vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *HistoryAttachment->GetImage(), SubresourceRange);
-        vk::DependencyInfo InitialDependencyInfo = vk::DependencyInfo().setDependencyFlags(vk::DependencyFlagBits::eByRegion).setImageMemoryBarriers(InitHistoryBarrier);
+        vk::ImageMemoryBarrier2 InitHistoryBarrier(
+            bHistoryInitialized ? vk::PipelineStageFlagBits2::eFragmentShader : vk::PipelineStageFlagBits2::eNone,
+            bHistoryInitialized ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlagBits2::eNone,
+            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+            bHistoryInitialized ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eTransferDstOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+            *HistoryAttachment->GetImage(), SubresourceRange);
+        vk::ImageMemoryBarrier2 HistoryReadyBarrier(
+            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+            vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+            vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *HistoryAttachment->GetImage(), SubresourceRange);
         auto& CommandBuffer = _VulkanContext->GetTransferCommandBuffer();
-        CommandBuffer.Begin();
-        CommandBuffer->pipelineBarrier2(InitialDependencyInfo);
-        CommandBuffer.End();
-        _VulkanContext->ExecuteGraphicsCommands(CommandBuffer);
+        CheckVulkanResult(CommandBuffer.Begin(), "Beginning history initialization");
+        CommandBuffer->pipelineBarrier2(vk::DependencyInfo().setImageMemoryBarriers(InitHistoryBarrier));
+        CommandBuffer->clearColorImage(*HistoryAttachment->GetImage(), vk::ImageLayout::eTransferDstOptimal,
+            vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f}), SubresourceRange);
+        CommandBuffer->pipelineBarrier2(vk::DependencyInfo().setImageMemoryBarriers(HistoryReadyBarrier));
+        CheckVulkanResult(CommandBuffer.End(), "Ending history initialization");
+        CheckVulkanResult(_VulkanContext->ExecuteGraphicsCommands(CommandBuffer), "Initializing history image");
+        bHistoryInitialized = true;
     };
     InitHistoryFrame();
     _VulkanContext->RegisterAutoRemovedCallbacks(Grt::FVulkanContext::ECallbackType::kCreateSwapchain, "InitHistoryFrame", InitHistoryFrame);
@@ -1683,17 +1838,48 @@ void FApplication::ExecuteMainRender()
 
     glm::vec4 LastBlackHoleRelativePos(0.0f, 0.0f, 0.0f, 1.0f);
     glm::mat4x4 lastdir(0.0f);
-    //LastFrameTime = glfwGetTime();
-    while (!glfwWindowShouldClose(_Window))
+    struct FRenderScope
     {
-        while (glfwGetWindowAttrib(_Window, GLFW_ICONIFIED))
+        Grt::FVulkanContext* Context;
+        ~FRenderScope()
         {
-            glfwWaitEvents();
+            Context->WaitIdle();
+            Context->RemoveRegisteredCallbacks();
+            g_GlobalSampler = nullptr;
+        }
+    } renderScope{_VulkanContext};
+    std::uint64_t presentedFrames = 0;
+    bool smokeResizeRequested = false;
+    bool smokeResizeRebuilt = false;
+    bool smokeResizePresented = false;
+    vk::Extent2D smokeOriginalExtent{};
+    vk::Extent2D smokeOriginalFramebuffer{};
+    vk::Extent2D smokeRebuiltExtent{};
+    LastFrameTime = PreviousTime = glfwGetTime();
+    while (!glfwWindowShouldClose(_Window) && (maxFrames == 0 || presentedFrames < maxFrames))
+    {
+        glfwPollEvents();
+        if (!WaitForDrawableFramebuffer())
+        {
+            break;
+        }
+        CheckFramebufferPixelLimit();
+        // These offscreen images are shared by all frame slots. Serialize their
+        // use until they are made per-frame; image barriers below remain required.
+        if (PreviousFrameFence)
+            CheckVulkanResult(PreviousFrameFence->Wait(), "Waiting for shared offscreen images");
+        if (_bFramebufferResized)
+        {
+            RebuildSwapchain();
+            if (smokeResizeRequested && _FramebufferSize != smokeOriginalFramebuffer &&
+                _WindowSize != smokeOriginalExtent)
+            {
+                smokeResizeRebuilt = true;
+                smokeRebuiltExtent = _WindowSize;
+            }
         }
 
-        InFlightFences[CurrentFrame].WaitAndReset();
-
-        glfwPollEvents();
+        CheckVulkanResult(InFlightFences[CurrentFrame].Wait(), "Waiting for frame fence");
         // 开始 UI 帧
 
 
@@ -1784,7 +1970,7 @@ void FApplication::ExecuteMainRender()
             char timeStr[64];
             std::strftime(timeStr, sizeof(timeStr), "%Y%m%d_%H%M%S", std::localtime(&time));
 
-            std::string folderName = "Screenshot_Batch_" + std::string(timeStr);
+            std::string folderName = (GetUserStateDirectory() / ("Screenshot_Batch_" + std::string(timeStr))).string();
             std::filesystem::create_directories(folderName); // 创建文件夹
 
             const int AccumulationFrames = 8; // 渲染多帧进行等权重混合，消除噪点
@@ -2078,8 +2264,10 @@ void FApplication::ExecuteMainRender()
                     + "_Span" + std::to_string(span) + ".hdr";
 
                 // 使用 stbi_write_hdr 保存真正的浮点数矩阵
-                stbi_write_hdr(filename.c_str(), 3840, 2160, 3, fp32_pixels);
-                std::cout << "  -> Saved RAW HDR: " << filename << std::endl;
+                if (stbi_write_hdr(filename.c_str(), 3840, 2160, 3, fp32_pixels))
+                    std::cout << "  -> Saved RAW HDR: " << filename << std::endl;
+                else
+                    NpgsCoreError("Failed to write screenshot: {}", filename);
 
                 delete[] fp32_pixels;
                 device.unmapMemory(stagingMemory);
@@ -2121,12 +2309,12 @@ void FApplication::ExecuteMainRender()
         _uiRenderer->BeginFrame();
 
         auto& ui_ctx = Npgs::System::UI::UIContext::Get();
-        ui_ctx.m_display_size = ImVec2((float)_WindowSize.width, (float)_WindowSize.height);
+        ui_ctx.m_display_size = ImGui::GetIO().DisplaySize;
 
         // =========================================================================
         // [修改] 游戏主循环中的 UI 处理
         // =========================================================================
-        ui_ctx.SetInputBlocked(_bIsDraggingInWorld || g_bHideUIAndMouse);
+        ui_ctx.SetInputBlocked(_bIsDraggingInWorld || _bIsDraggingRightInWorld || g_bHideUIAndMouse);
         m_screen_manager->Update(_DeltaTime);
         m_screen_manager->ApplyPendingChanges();
 
@@ -2159,7 +2347,8 @@ void FApplication::ExecuteMainRender()
                 lastdir = BlackHoleArgs.InverseCamRot;
                 ShaderResourceManager->UpdateEntrieBuffer(CurrentFrame, "GameArgs", GameArgs);
                 FGameArgs PrepassArgs = GameArgs;
-                PrepassArgs.Resolution = GameArgs.Resolution * 0.5f; // <--- 关键：分辨率减半
+                PrepassArgs.Resolution = glm::vec2(std::max(1u, _WindowSize.width / 2),
+                                                  std::max(1u, _WindowSize.height / 2));
                 ShaderResourceManager->UpdateEntrieBuffer(CurrentFrame, "GameArgsPrepass", PrepassArgs);
                 BlackHoleArgs.InverseCamRot = glm::mat4_cast(glm::conjugate(_FreeCamera->GetOrientation()));
                 BlackHoleArgs.BlackHoleRelativePosRs = glm::vec4(glm::vec3(_FreeCamera->GetViewMatrix() * glm::vec4(0.0 * BlackHoleArgs.BlackHoleMassSol * kGravityConstant / pow(kSpeedOfLight, 2) * kSolarMass / kLightYearToMeter, 0.0f, -0.000f, 1.0f)) / Rs, 1.0);
@@ -2281,7 +2470,8 @@ void FApplication::ExecuteMainRender()
                 lastdir = BlackHoleArgs.InverseCamRot;
                 ShaderResourceManager->UpdateEntrieBuffer(CurrentFrame, "GameArgs", GameArgs);
                 FGameArgs PrepassArgs = GameArgs;
-                PrepassArgs.Resolution = GameArgs.Resolution * 0.5f; // <--- 关键：分辨率减半
+                PrepassArgs.Resolution = glm::vec2(std::max(1u, _WindowSize.width / 2),
+                                                  std::max(1u, _WindowSize.height / 2));
                 ShaderResourceManager->UpdateEntrieBuffer(CurrentFrame, "GameArgsPrepass", PrepassArgs);
                 BlackHoleArgs.BlackHoleTime = GameTime * kSpeedOfLight / Rs / kLightYearToMeter;
                 BlackHoleArgs.InverseCamRot = glm::mat4_cast(glm::conjugate(_FreeCamera->GetOrientation()));
@@ -2487,18 +2677,30 @@ void FApplication::ExecuteMainRender()
 
             ShaderResourceManager->UpdateEntrieBuffer(CurrentFrame, "BlackHoleArgs", BlackHoleArgs);
 
-            _VulkanContext->SwapImage(*Semaphores_ImageAvailable[CurrentFrame]);
+            const vk::Result acquireResult = _VulkanContext->SwapImage(*Semaphores_ImageAvailable[CurrentFrame]);
+            if (acquireResult == vk::Result::eErrorOutOfDateKHR)
+            {
+                _bFramebufferResized = true;
+                continue; // The frame fence remains signaled until an actual submission.
+            }
+            if (acquireResult == vk::Result::eSuboptimalKHR)
+                _bFramebufferResized = true;
+            else
+                CheckVulkanResult(acquireResult, "Acquiring swapchain image");
             std::uint32_t ImageIndex = _VulkanContext->GetCurrentImageIndex();
 
             // BlendAttachmentInfo.setImageView(_VulkanContext->GetSwapchainImageView(ImageIndex));
 
-            std::uint32_t WorkgroundX = (_WindowSize.width + 9) / 10;
-            std::uint32_t WorkgroundY = (_WindowSize.height + 9) / 10;
+            // Bloom.comp.glsl declares a 16x16 local workgroup.
+            std::uint32_t WorkgroundX = (_WindowSize.width + 15) / 16;
+            std::uint32_t WorkgroundY = (_WindowSize.height + 15) / 16;
 
             // Record BlackHole rendering commands
             // -----------------------------------
+            const vk::Extent2D submittedExtent = _WindowSize;
             auto& CurrentBuffer = GraphicsCommandBuffers[CurrentFrame];
-            CurrentBuffer.Begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+            CheckVulkanResult(CurrentBuffer.Begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit),
+                "Beginning frame command buffer");
 
 
             vk::Extent2D CurrentHalfSize = { _WindowSize.width / 2, _WindowSize.height / 2 };
@@ -2512,12 +2714,18 @@ void FApplication::ExecuteMainRender()
                 0.0f, 1.0f
             );
             vk::Rect2D PrepassScissor({ 0, 0 }, CurrentHalfSize);
+            vk::Viewport FullViewport(0.0f, static_cast<float>(_WindowSize.height),
+                static_cast<float>(_WindowSize.width), -static_cast<float>(_WindowSize.height), 0.0f, 1.0f);
+            vk::Rect2D FullScissor({0, 0}, _WindowSize);
 
 
 
             {
-                vk::ImageMemoryBarrier2 b1(vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *DistortionAttachment->GetImage(), SubresourceRange);
-                vk::ImageMemoryBarrier2 b2(vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *VolumetricAttachment->GetImage(), SubresourceRange);
+                const auto srcStage = bOffscreenImagesUsed ? vk::PipelineStageFlagBits2::eFragmentShader : vk::PipelineStageFlagBits2::eNone;
+                const auto srcAccess = bOffscreenImagesUsed ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlagBits2::eNone;
+                const auto oldLayout = bOffscreenImagesUsed ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined;
+                vk::ImageMemoryBarrier2 b1(srcStage, srcAccess, vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, oldLayout, vk::ImageLayout::eColorAttachmentOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *DistortionAttachment->GetImage(), SubresourceRange);
+                vk::ImageMemoryBarrier2 b2(srcStage, srcAccess, vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, oldLayout, vk::ImageLayout::eColorAttachmentOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *VolumetricAttachment->GetImage(), SubresourceRange);
                 std::array barriers = { b1, b2 };
                 CurrentBuffer->pipelineBarrier2(vk::DependencyInfo().setDependencyFlags(vk::DependencyFlagBits::eByRegion).setImageMemoryBarriers(barriers));
             }
@@ -2535,6 +2743,8 @@ void FApplication::ExecuteMainRender()
             CurrentBuffer->beginRendering(PrepassRenderingInfo);
             CurrentBuffer->bindVertexBuffers(0, *QuadOnlyVertexBuffer.GetBuffer(), Offset);
             CurrentBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, PrepassPipeline);
+            CurrentBuffer->setViewport(0, 1, &PrepassViewport);
+            CurrentBuffer->setScissor(0, 1, &PrepassScissor);
             CurrentBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, PrepassPipelineLayout, 0, PrepassShader->GetDescriptorSets(CurrentFrame), {});
             CurrentBuffer->draw(6, 1, 0, 0);
             CurrentBuffer->endRendering();
@@ -2549,8 +2759,14 @@ void FApplication::ExecuteMainRender()
                 // Distortion & Volumetric: Write -> Read
                 vk::ImageMemoryBarrier2 b1(vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *DistortionAttachment->GetImage(), SubresourceRange);
                 vk::ImageMemoryBarrier2 b2(vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *VolumetricAttachment->GetImage(), SubresourceRange);
-                // BlackHole: Undef -> Write
-                vk::ImageMemoryBarrier2 b3(vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored, *BlackHoleAttachment->GetImage(), SubresourceRange);
+                // Previous frame sampled BlackHole in both compute and fragment stages.
+                vk::ImageMemoryBarrier2 b3(
+                    bOffscreenImagesUsed ? vk::PipelineStageFlags2(vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader) : vk::PipelineStageFlags2(vk::PipelineStageFlagBits2::eNone),
+                    bOffscreenImagesUsed ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlagBits2::eNone,
+                    vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite,
+                    bOffscreenImagesUsed ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined,
+                    vk::ImageLayout::eColorAttachmentOptimal, vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
+                    *BlackHoleAttachment->GetImage(), SubresourceRange);
 
                 std::array barriers = { b1, b2, b3 };
                 CurrentBuffer->pipelineBarrier2(vk::DependencyInfo().setDependencyFlags(vk::DependencyFlagBits::eByRegion).setImageMemoryBarriers(barriers));
@@ -2564,6 +2780,8 @@ void FApplication::ExecuteMainRender()
             CurrentBuffer->beginRendering(CompositeRenderingInfo);
             CurrentBuffer->bindVertexBuffers(0, *QuadOnlyVertexBuffer.GetBuffer(), Offset);
             CurrentBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, CompositePipeline);
+            CurrentBuffer->setViewport(0, 1, &FullViewport);
+            CurrentBuffer->setScissor(0, 1, &FullScissor);
             // 注意：Composite Shader 的 Descriptor Set 包含了 Prepass 的结果
             CurrentBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, CompositePipelineLayout, 0, CompositeShader->GetDescriptorSets(CurrentFrame), {});
             CurrentBuffer->draw(6, 1, 0, 0);
@@ -2610,7 +2828,7 @@ void FApplication::ExecuteMainRender()
             vk::ImageMemoryBarrier2 PostCopySrcBarrier(
                 vk::PipelineStageFlagBits2::eTransfer,
                 vk::AccessFlagBits2::eTransferRead,
-                vk::PipelineStageFlagBits2::eComputeShader,
+                vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader,
                 vk::AccessFlagBits2::eShaderRead,
                 vk::ImageLayout::eTransferSrcOptimal,
                 vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -2647,11 +2865,11 @@ void FApplication::ExecuteMainRender()
             //CurrentBuffer.Begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
             vk::ImageMemoryBarrier2 InitPreBloomBarrier(
-                vk::PipelineStageFlagBits2::eTopOfPipe,
-                vk::AccessFlagBits2::eNone,
+                bOffscreenImagesUsed ? vk::PipelineStageFlagBits2::eComputeShader : vk::PipelineStageFlagBits2::eNone,
+                bOffscreenImagesUsed ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlagBits2::eNone,
                 vk::PipelineStageFlagBits2::eComputeShader,
                 vk::AccessFlagBits2::eShaderWrite,
-                vk::ImageLayout::eUndefined,
+                bOffscreenImagesUsed ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined,
                 vk::ImageLayout::eGeneral,
                 vk::QueueFamilyIgnored,
                 vk::QueueFamilyIgnored,
@@ -2696,11 +2914,11 @@ void FApplication::ExecuteMainRender()
             //CurrentBuffer.Begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
             vk::ImageMemoryBarrier2 InitGaussBlurBarrier(
-                vk::PipelineStageFlagBits2::eTopOfPipe,
-                vk::AccessFlagBits2::eNone,
+                bOffscreenImagesUsed ? vk::PipelineStageFlagBits2::eFragmentShader : vk::PipelineStageFlagBits2::eNone,
+                bOffscreenImagesUsed ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlagBits2::eNone,
                 vk::PipelineStageFlagBits2::eComputeShader,
                 vk::AccessFlagBits2::eShaderWrite,
-                vk::ImageLayout::eUndefined,
+                bOffscreenImagesUsed ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined,
                 vk::ImageLayout::eGeneral,
                 vk::QueueFamilyIgnored,
                 vk::QueueFamilyIgnored,
@@ -2824,9 +3042,11 @@ void FApplication::ExecuteMainRender()
             // 7. Blend Pass: 渲染到 SceneColorAttachment
             {
                 vk::ImageMemoryBarrier2 sceneColorInitBarrier(
-                    vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                    bOffscreenImagesUsed ? vk::PipelineStageFlagBits2::eTransfer : vk::PipelineStageFlagBits2::eNone,
+                    bOffscreenImagesUsed ? vk::AccessFlagBits2::eTransferRead : vk::AccessFlagBits2::eNone,
                     vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite,
-                    vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal,
+                    bOffscreenImagesUsed ? vk::ImageLayout::eTransferSrcOptimal : vk::ImageLayout::eUndefined,
+                    vk::ImageLayout::eColorAttachmentOptimal,
                     vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                     *SceneColorAttachment->GetImage(), SubresourceRange
                 );
@@ -2840,6 +3060,8 @@ void FApplication::ExecuteMainRender()
                 CurrentBuffer->beginRendering(sceneRenderingInfo);
                 CurrentBuffer->bindVertexBuffers(0, *QuadOnlyVertexBuffer.GetBuffer(), Offset);
                 CurrentBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, BlendPipeline);
+                CurrentBuffer->setViewport(0, 1, &FullViewport);
+                CurrentBuffer->setScissor(0, 1, &FullScissor);
                 CurrentBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, BlendPipelineLayout, 0, BlendShader->GetDescriptorSets(CurrentFrame), {});
                 CurrentBuffer->draw(6, 1, 0, 0);
                 CurrentBuffer->endRendering();
@@ -2867,9 +3089,11 @@ void FApplication::ExecuteMainRender()
                     *SceneColorAttachment->GetImage(), SubresourceRange
                 );
                 vk::ImageMemoryBarrier2 pingToDstBarrier(
-                    vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                    bOffscreenImagesUsed ? vk::PipelineStageFlagBits2::eTransfer : vk::PipelineStageFlagBits2::eNone,
+                    bOffscreenImagesUsed ? vk::AccessFlagBits2::eTransferRead : vk::AccessFlagBits2::eNone,
                     vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-                    vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                    bOffscreenImagesUsed ? vk::ImageLayout::eTransferSrcOptimal : vk::ImageLayout::eUndefined,
+                    vk::ImageLayout::eTransferDstOptimal,
                     vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                     *ping->GetImage(), SubresourceRange
                 );
@@ -2881,7 +3105,7 @@ void FApplication::ExecuteMainRender()
                 blit.srcSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
                 blit.srcOffsets[1] = vk::Offset3D{ (int32_t)_WindowSize.width, (int32_t)_WindowSize.height, 1 };
                 blit.dstSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
-                blit.dstOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width / 2), (int32_t)(_WindowSize.height / 2), 1 };
+                blit.dstOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width / 2), (int32_t)std::max(1u, _WindowSize.height / 2), 1 };
                 CurrentBuffer->blitImage(
                     *SceneColorAttachment->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                     *ping->GetImage(), vk::ImageLayout::eTransferDstOptimal,
@@ -2900,9 +3124,11 @@ void FApplication::ExecuteMainRender()
                         *ping->GetImage(), SubresourceRange
                     );
                     vk::ImageMemoryBarrier2 pongToDstBarrier(
-                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead, // Pong could have been a src before
+                        (i == 1 && !bOffscreenImagesUsed) ? vk::PipelineStageFlagBits2::eNone : vk::PipelineStageFlagBits2::eTransfer,
+                        (i == 1 && !bOffscreenImagesUsed) ? vk::AccessFlagBits2::eNone : vk::AccessFlagBits2::eTransferRead,
                         vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-                        vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eTransferDstOptimal,
+                        (i == 1 && !bOffscreenImagesUsed) ? vk::ImageLayout::eUndefined : vk::ImageLayout::eTransferSrcOptimal,
+                        vk::ImageLayout::eTransferDstOptimal,
                         vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                         *pong->GetImage(), SubresourceRange
                     );
@@ -2910,8 +3136,8 @@ void FApplication::ExecuteMainRender()
                     CurrentBuffer->pipelineBarrier2(vk::DependencyInfo().setImageMemoryBarriers(loopBarriers));
 
                     // Blit from ping to pong
-                    blit.srcOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width >> i), (int32_t)(_WindowSize.height >> i), 1 };
-                    blit.dstOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width >> (i + 1)), (int32_t)(_WindowSize.height >> (i + 1)), 1 };
+                    blit.srcOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width >> i), (int32_t)std::max(1u, _WindowSize.height >> i), 1 };
+                    blit.dstOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width >> (i + 1)), (int32_t)std::max(1u, _WindowSize.height >> (i + 1)), 1 };
                     CurrentBuffer->blitImage(
                         *ping->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                         *pong->GetImage(), vk::ImageLayout::eTransferDstOptimal,
@@ -2944,8 +3170,8 @@ void FApplication::ExecuteMainRender()
                     CurrentBuffer->pipelineBarrier2(vk::DependencyInfo().setImageMemoryBarriers(loopBarriers));
 
                     // Blit from ping to pong
-                    blit.srcOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width >> (i + 1)), (int32_t)(_WindowSize.height >> (i + 1)), 1 };
-                    blit.dstOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width >> i), (int32_t)(_WindowSize.height >> i), 1 };
+                    blit.srcOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width >> (i + 1)), (int32_t)std::max(1u, _WindowSize.height >> (i + 1)), 1 };
+                    blit.dstOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width >> i), (int32_t)std::max(1u, _WindowSize.height >> i), 1 };
                     CurrentBuffer->blitImage(
                         *ping->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                         *pong->GetImage(), vk::ImageLayout::eTransferDstOptimal,
@@ -2965,17 +3191,19 @@ void FApplication::ExecuteMainRender()
                     *ping->GetImage(), SubresourceRange
                 );
                 vk::ImageMemoryBarrier2 finalDstBarrier(
-                    vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                    bOffscreenImagesUsed ? vk::PipelineStageFlagBits2::eFragmentShader : vk::PipelineStageFlagBits2::eNone,
+                    bOffscreenImagesUsed ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlagBits2::eNone,
                     vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-                    vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                    bOffscreenImagesUsed ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined,
+                    vk::ImageLayout::eTransferDstOptimal,
                     vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                     *UIBlurAttachment->GetImage(), SubresourceRange
                 );
                 std::array finalBlitBarriers = { finalSrcBarrier, finalDstBarrier };
                 CurrentBuffer->pipelineBarrier2(vk::DependencyInfo().setImageMemoryBarriers(finalBlitBarriers));
 
-                blit.srcOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width / 2), (int32_t)(_WindowSize.height / 2), 1 };
-                blit.dstOffsets[1] = vk::Offset3D{ (int32_t)(_WindowSize.width / 2), (int32_t)(_WindowSize.height / 2), 1 };
+                blit.srcOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width / 2), (int32_t)std::max(1u, _WindowSize.height / 2), 1 };
+                blit.dstOffsets[1] = vk::Offset3D{ (int32_t)std::max(1u, _WindowSize.width / 2), (int32_t)std::max(1u, _WindowSize.height / 2), 1 };
                 CurrentBuffer->blitImage(
                     *ping->GetImage(), vk::ImageLayout::eTransferSrcOptimal,
                     *UIBlurAttachment->GetImage(), vk::ImageLayout::eTransferDstOptimal,
@@ -2996,7 +3224,9 @@ void FApplication::ExecuteMainRender()
             // 9. Copy Scene to Swapchain
             {
                 vk::ImageMemoryBarrier2 swapchainCopyDstBarrier(
-                    vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                    // Link the acquired-image semaphore wait to the layout
+                    // transition, even though previous image contents are discarded.
+                    vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eNone,
                     vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
                     vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
                     vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
@@ -3020,7 +3250,8 @@ void FApplication::ExecuteMainRender()
             {
                 vk::ImageMemoryBarrier2 swapchainUIBarrier(
                     vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-                    vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite,
+                    vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite,
                     vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
                     vk::QueueFamilyIgnored, vk::QueueFamilyIgnored,
                     _VulkanContext->GetSwapchainImage(ImageIndex), SubresourceRange
@@ -3066,12 +3297,49 @@ void FApplication::ExecuteMainRender()
             // [新代码块结束]
             // =========================================================================
 
-            CurrentBuffer.End();
+            CheckVulkanResult(CurrentBuffer.End(), "Ending frame command buffer");
 
-            _VulkanContext->SubmitCommandBufferToGraphics(
+            CheckVulkanResult(InFlightFences[CurrentFrame].Reset(), "Resetting frame fence");
+            CheckVulkanResult(_VulkanContext->SubmitCommandBufferToGraphics(
                 *CurrentBuffer, *Semaphores_ImageAvailable[CurrentFrame],
-                *Semaphores_RenderFinished[CurrentFrame], *InFlightFences[CurrentFrame]);
-            _VulkanContext->PresentImage(*Semaphores_RenderFinished[CurrentFrame]);
+                *Semaphores_RenderFinished[ImageIndex], *InFlightFences[CurrentFrame],
+                vk::PipelineStageFlagBits::eAllCommands), "Submitting frame");
+            PreviousFrameFence = &InFlightFences[CurrentFrame];
+            bOffscreenImagesUsed = true;
+            const vk::Result presentResult = _VulkanContext->PresentImage(*Semaphores_RenderFinished[ImageIndex]);
+            if (presentResult == vk::Result::eSuccess)
+            {
+                ++presentedFrames;
+                if (smokeResizeRequested && smokeResizeRebuilt && !smokeResizePresented &&
+                    submittedExtent == smokeRebuiltExtent &&
+                    submittedExtent == _VulkanContext->GetSwapchainCreateInfo().imageExtent)
+                {
+                    smokeResizePresented = true;
+                    std::cout << "NPGS_SMOKE_RESIZE_OK width=" << submittedExtent.width
+                              << " height=" << submittedExtent.height
+                              << " frames=" << presentedFrames << std::endl;
+                }
+                if (smokeResize && !smokeResizeRequested && presentedFrames == 2)
+                {
+                    int width = 0, height = 0;
+                    glfwGetWindowSize(_Window, &width, &height);
+                    smokeOriginalExtent = _WindowSize;
+                    smokeOriginalFramebuffer = _FramebufferSize;
+                    smokeResizeRequested = true;
+                    glfwSetWindowSize(_Window, width + 64, height + 48);
+                    NpgsCoreInfo("Smoke resize requested after frame 2: {}x{} -> {}x{} (logical).",
+                        width, height, width + 64, height + 48);
+                }
+            }
+            else if (presentResult == vk::Result::eErrorOutOfDateKHR ||
+                     presentResult == vk::Result::eSuboptimalKHR)
+            {
+                _bFramebufferResized = true;
+            }
+            else
+            {
+                CheckVulkanResult(presentResult, "Presenting frame");
+            }
         }
         CurrentFrame = (CurrentFrame + 1) % Config::Graphics::kMaxFrameInFlight;
 
@@ -3080,6 +3348,10 @@ void FApplication::ExecuteMainRender()
         // ================= [新增] 处理图片吸积盘的描述符更新 =================
         if (g_DiskStateChanged && g_GlobalSampler)
         {
+            // These writes update every frame's descriptor sets, including the
+            // frame just submitted. They are not update-after-bind descriptors.
+            if (PreviousFrameFence)
+                CheckVulkanResult(PreviousFrameFence->Wait(), "Waiting to update disk descriptors");
             g_DiskStateChanged = false;
             auto* AssetManager = Art::FAssetManager::GetInstance();
             auto* PrepassShader = AssetManager->GetAsset<Art::FShader>("BlackHolePrepass");
@@ -3108,42 +3380,107 @@ void FApplication::ExecuteMainRender()
         // =====================================================================
     }
 
-    _VulkanContext->WaitIdle();
-    Terminate();
+    CheckVulkanResult(_VulkanContext->WaitIdle(), "Waiting for renderer shutdown");
+    NpgsCoreInfo("Presented {} frames; completed {} swapchain rebuilds.", presentedFrames, _SwapchainRebuildCount);
+    if (smokeResize && !smokeResizePresented)
+    {
+        throw std::runtime_error("Smoke resize failed: no successful present at a rebuilt, changed framebuffer extent.");
+    }
+    return presentedFrames;
 }
 
 void FApplication::Terminate()
 {
+    if (_VulkanContext->GetDevice())
+    {
+        _VulkanContext->WaitIdle();
+    }
+    _VulkanContext->RemoveRegisteredCallbacks();
+    m_screen_manager.reset();
     if (_uiRenderer)
     {
         _uiRenderer->Shutdown();
         _uiRenderer.reset();
     }
-    _VulkanContext->WaitIdle();
-    glfwDestroyWindow(_Window);
-    glfwTerminate();
+    if (_AssetManager)
+    {
+        // AssetManager can predate Core due to CPU-only static initialization.
+        // Release its GPU assets now, before Core destroys the device/VMA.
+        _AssetManager->ClearAssets();
+        _AssetManager = nullptr;
+    }
+    // Rendering locals, UI and assets are gone. Finish Vulkan cleanup while its
+    // layer dispatch and the Wayland window/display still exist.
+    try
+    {
+        const vk::Result result = _VulkanContext->Shutdown();
+        if (result != vk::Result::eSuccess)
+        {
+            std::cerr << "Vulkan Context::Shutdown reported " << vk::to_string(result)
+                      << " (" << static_cast<int>(result) << "); cleanup continued.\n";
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << "Failed to shut down Vulkan context: " << error.what() << '\n';
+    }
+    catch (...)
+    {
+        std::cerr << "Failed to shut down Vulkan context.\n";
+    }
+    if (_Window)
+    {
+        glfwDestroyWindow(_Window);
+        _Window = nullptr;
+    }
+    if (_bGlfwInitialized)
+    {
+        glfwTerminate();
+        _bGlfwInitialized = false;
+    }
 }
 
 
 bool FApplication::InitializeWindow()
 {
+#if GLFW_VERSION_MAJOR < 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR < 4)
+#error "NPGS requires GLFW 3.4 or newer with Wayland support."
+#endif
+    glfwSetErrorCallback([](int code, const char* description)
+    {
+        std::cerr << "GLFW error " << code << ": " << (description ? description : "unknown") << '\n';
+    });
+    int major = 0, minor = 0, revision = 0;
+    glfwGetVersion(&major, &minor, &revision);
+    if (major < 3 || (major == 3 && minor < 4))
+        throw std::runtime_error("GLFW 3.4 or newer is required.");
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
     if (glfwInit() == GLFW_FALSE)
     {
         NpgsCoreError("Failed to initialize GLFW.");
         return false;
-    };
+    }
+    _bGlfwInitialized = true;
+    const int platform = glfwGetPlatform();
+    NpgsCoreInfo("GLFW {}.{}.{} platform: {} ({:#x}).", major, minor, revision,
+        platform == GLFW_PLATFORM_WAYLAND ? "Wayland" : "unexpected", platform);
+    if (platform != GLFW_PLATFORM_WAYLAND)
+        throw std::runtime_error("GLFW did not select the required Wayland platform.");
+    if (!glfwVulkanSupported())
+        throw std::runtime_error("GLFW reports no Vulkan loader or Wayland Vulkan surface support.");
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    // 注意：全屏模式下透明缓冲通常无效或会导致兼容性问题，根据需求保留
-    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, true);
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "npgs");
     GLFWmonitor* PrimaryMonitor = nullptr;
 
     if (_bEnableFullscreen)
     {
         // 获取主显示器
         PrimaryMonitor = glfwGetPrimaryMonitor();
-
-
+        if (!PrimaryMonitor)
+            throw std::runtime_error("Fullscreen requested, but no Wayland monitor is available.");
         const GLFWvidmode* mode = glfwGetVideoMode(PrimaryMonitor);
+        if (!mode)
+            throw std::runtime_error("Failed to query fullscreen monitor video mode.");
         _WindowSize.width = mode->width;
         _WindowSize.height = mode->height;
 
@@ -3154,19 +3491,22 @@ bool FApplication::InitializeWindow()
     if (_Window == nullptr)
     {
         NpgsCoreError("Failed to create GLFW window.");
-        glfwTerminate();
         return false;
     }
 
     InitializeInputCallbacks();
+    if (_SmokeMaxPixels != 0)
+    {
+        if (!WaitForDrawableFramebuffer())
+            throw std::runtime_error("Window closed before a drawable framebuffer became available.");
+        CheckFramebufferPixelLimit();
+    }
 
     std::uint32_t ExtensionCount = 0;
     const char** Extensions = glfwGetRequiredInstanceExtensions(&ExtensionCount);
     if (Extensions == nullptr)
     {
         NpgsCoreError("Failed to get required instance extensions.");
-        glfwDestroyWindow(_Window);
-        glfwTerminate();
         return false;
     }
 
@@ -3177,29 +3517,46 @@ bool FApplication::InitializeWindow()
 
     _VulkanContext->AddDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
-    vk::Result Result;
-    if ((Result = _VulkanContext->CreateInstance()) != vk::Result::eSuccess)
+    _VulkanContext->SetInstanceLayers({});
+    if (_bEnableValidation)
     {
-        glfwDestroyWindow(_Window);
-        glfwTerminate();
-        return false;
+        const auto layers = vk::enumerateInstanceLayerProperties();
+        const bool available = std::any_of(layers.begin(), layers.end(), [](const auto& layer)
+        {
+            return std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0;
+        });
+        if (!available)
+            throw std::runtime_error("--validation requested, but VK_LAYER_KHRONOS_validation is not installed.");
+        _VulkanContext->AddInstanceLayer("VK_LAYER_KHRONOS_validation");
+        _VulkanContext->AddInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        NpgsCoreInfo("Vulkan validation explicitly enabled.");
     }
+    else
+        NpgsCoreInfo("Vulkan validation disabled (enable with --validation).");
+    CheckVulkanResult(_VulkanContext->CreateInstance(), "Creating Vulkan instance");
 
     vk::SurfaceKHR Surface;
-    if (glfwCreateWindowSurface(_VulkanContext->GetInstance(), _Window, nullptr, reinterpret_cast<VkSurfaceKHR*>(&Surface)) != VK_SUCCESS)
-    {
-        NpgsCoreError("Failed to create window surface.");
-        glfwDestroyWindow(_Window);
-        glfwTerminate();
-        return false;
-    }
+    CheckVulkanResult(static_cast<vk::Result>(glfwCreateWindowSurface(
+        _VulkanContext->GetInstance(), _Window, nullptr, reinterpret_cast<VkSurfaceKHR*>(&Surface))),
+        "Creating Wayland Vulkan surface");
     _VulkanContext->SetSurface(Surface);
 
-    if (_VulkanContext->CreateDevice(0) != vk::Result::eSuccess ||
-        _VulkanContext->CreateSwapchain(_WindowSize, _bEnableVSync) != vk::Result::eSuccess)
-    {
-        return false;
-    }
+    CheckVulkanResult(_VulkanContext->CreateDevice(0), "Creating Vulkan device");
+    if (!WaitForDrawableFramebuffer())
+        throw std::runtime_error("Window closed before a drawable framebuffer became available.");
+    CheckFramebufferPixelLimit();
+    CheckVulkanResult(_VulkanContext->CreateSwapchain(_FramebufferSize, _bEnableVSync), "Creating swapchain");
+    _WindowSize = _VulkanContext->GetSwapchainCreateInfo().imageExtent;
+    _bFramebufferResized = false;
+    int logicalWidth = 0, logicalHeight = 0, framebufferWidth = 0, framebufferHeight = 0;
+    float scaleX = 1.0f, scaleY = 1.0f;
+    glfwGetWindowSize(_Window, &logicalWidth, &logicalHeight);
+    glfwGetFramebufferSize(_Window, &framebufferWidth, &framebufferHeight);
+    glfwGetWindowContentScale(_Window, &scaleX, &scaleY);
+    NpgsCoreInfo("Initial window metrics: logical {}x{}, actual GLFW framebuffer {}x{} pixels, "
+        "tracked framebuffer {}x{}, content scale {}x{}, swapchain extent {}x{}.",
+        logicalWidth, logicalHeight, framebufferWidth, framebufferHeight,
+        _FramebufferSize.width, _FramebufferSize.height, scaleX, scaleY, _WindowSize.width, _WindowSize.height);
 
     _FreeCamera = std::make_unique<SysSpa::FCamera>(glm::vec3(0.0f, 0.0f, 0.0f), 0.2, 2.5, cfov);
     _FreeCamera->SetCameraMode(true);
@@ -3216,6 +3573,82 @@ void FApplication::InitializeInputCallbacks()
     glfwSetCursorPosCallback(_Window, &FApplication::CursorPosCallback);
     glfwSetKeyCallback(_Window, &FApplication::KeyCallback);
     glfwSetCharCallback(_Window, &FApplication::CharCallback);
+    glfwSetWindowFocusCallback(_Window, [](GLFWwindow* window, int focused)
+    {
+        auto* app = static_cast<FApplication*>(glfwGetWindowUserPointer(window));
+        app->_bFirstMouse = app->_bFirstMouseRight = true;
+        if (!focused)
+        {
+            app->_bLeftMousePressedInWorld = app->_bIsDraggingInWorld = false;
+            app->_bRightMousePressedInWorld = app->_bIsDraggingRightInWorld = false;
+            app->SetCursorMode(false);
+        }
+        else if (g_bHideUIAndMouse)
+        {
+            app->SetCursorMode(true);
+        }
+    });
+}
+
+void FApplication::SetCursorMode(bool disabled)
+{
+    const int mode = disabled ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL;
+    if (glfwGetInputMode(_Window, GLFW_CURSOR) != mode)
+    {
+        // GLFW's disabled mode supplies a virtual relative cursor on Wayland.
+        // Never warp it back to the drag origin; discard the first delta instead.
+        glfwSetInputMode(_Window, GLFW_CURSOR, mode);
+        _bFirstMouse = _bFirstMouseRight = true;
+    }
+}
+
+bool FApplication::WaitForDrawableFramebuffer()
+{
+    while (!glfwWindowShouldClose(_Window))
+    {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(_Window, &width, &height);
+        const vk::Extent2D size{static_cast<std::uint32_t>(std::max(width, 0)),
+                                static_cast<std::uint32_t>(std::max(height, 0))};
+        if (size != _FramebufferSize)
+        {
+            _FramebufferSize = size;
+            _bFramebufferResized = true;
+        }
+        if (width > 0 && height > 0 && !glfwGetWindowAttrib(_Window, GLFW_ICONIFIED))
+            return true;
+        // Closing a minimized window must also terminate this wait.
+        glfwWaitEvents();
+        LastFrameTime = glfwGetTime();
+        _DeltaTime = 0.0;
+    }
+    return false;
+}
+
+void FApplication::CheckFramebufferPixelLimit() const
+{
+    if (_SmokeMaxPixels == 0)
+        return;
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(_Window, &width, &height);
+    ValidateFramebufferPixelLimit(
+        vk::Extent2D{static_cast<std::uint32_t>(std::max(width, 0)),
+                     static_cast<std::uint32_t>(std::max(height, 0))}, _SmokeMaxPixels);
+}
+
+void FApplication::RebuildSwapchain()
+{
+    CheckFramebufferPixelLimit();
+    CheckVulkanResult(_VulkanContext->WaitIdle(), "Waiting to rebuild swapchain");
+    _VulkanContext->SetFramebufferSize(_FramebufferSize);
+    CheckVulkanResult(_VulkanContext->RecreateSwapchain(), "Rebuilding swapchain");
+    _WindowSize = _VulkanContext->GetSwapchainCreateInfo().imageExtent;
+    _bFramebufferResized = false;
+    ++_SwapchainRebuildCount;
+    NpgsCoreInfo("Swapchain rebuild #{} completed: framebuffer {}x{}, swapchain {}x{}.",
+        _SwapchainRebuildCount, _FramebufferSize.width, _FramebufferSize.height,
+        _WindowSize.width, _WindowSize.height);
+    LastFrameTime = glfwGetTime();
 }
 
 
@@ -3381,7 +3814,7 @@ void FApplication::ProcessInput()
             _DragStartY = currY;
 
             _bIsDraggingInWorld = true;
-            glfwSetInputMode(_Window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            SetCursorMode(true);
             _bFirstMouse = true;
         }
     }
@@ -3396,11 +3829,10 @@ void FApplication::ProcessInput()
             // 仅当右键没有在拖动时才恢复鼠标显示，防止左右键冲突
             if (!_bIsDraggingRightInWorld && !g_bHideUIAndMouse)
             {
-                glfwSetInputMode(_Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                SetCursorMode(false);
             }
 
-            glfwSetCursorPos(_Window, _DragStartX, _DragStartY);
-            io.MousePos = ImVec2((float)_DragStartX, (float)_DragStartY);
+            _bFirstMouse = _bFirstMouseRight = true;
 
             s_LeftFrameCooldown = 3;
         }
@@ -3451,7 +3883,7 @@ void FApplication::ProcessInput()
             _DragRightStartY = currY;
 
             _bIsDraggingRightInWorld = true;
-            glfwSetInputMode(_Window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            SetCursorMode(true);
             _bFirstMouseRight = true;
         }
     }
@@ -3466,11 +3898,10 @@ void FApplication::ProcessInput()
             // 仅当左键没有在拖动时才恢复鼠标显示
             if (!_bIsDraggingInWorld && !g_bHideUIAndMouse)
             {
-                glfwSetInputMode(_Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                SetCursorMode(false);
             }
 
-            glfwSetCursorPos(_Window, _DragRightStartX, _DragRightStartY);
-            io.MousePos = ImVec2((float)_DragRightStartX, (float)_DragRightStartY);
+            _bFirstMouse = _bFirstMouseRight = true;
 
             s_RightFrameCooldown = 3;
         }
@@ -3621,7 +4052,7 @@ void FApplication::ProcessInput()
         bool isPDown = glfwGetKey(_Window, GLFW_KEY_P) == GLFW_PRESS;
         if (isPDown && !wasPDown)
         {
-            std::string filename = "C:/Users/bcy00/Desktop/python乱七八糟/ShaderArgs_" + std::to_string(FrameCount) + ".json";
+            std::string filename = (GetUserStateDirectory() / ("ShaderArgs_" + std::to_string(FrameCount) + ".json")).string();
             DumpArgsToJson(filename);
         }
         wasPDown = isPDown;
@@ -3632,11 +4063,11 @@ void FApplication::ProcessInput()
             g_bHideUIAndMouse = !g_bHideUIAndMouse;
             if (g_bHideUIAndMouse)
             {
-                glfwSetInputMode(_Window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                SetCursorMode(true);
             }
             else if (!_bIsDraggingInWorld && !_bIsDraggingRightInWorld)
             {
-                glfwSetInputMode(_Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                SetCursorMode(_bIsDraggingInWorld || _bIsDraggingRightInWorld);
             }
         }
         wasHDown = isHDown;
@@ -3783,14 +4214,9 @@ void FApplication::HandleChar(unsigned int codepoint)
 
 void FApplication::HandleFramebufferSize(int Width, int Height)
 {
-    if (Width == 0 || Height == 0) return;
-
-    _WindowSize.width = Width;
-    _WindowSize.height = Height;
-    _VulkanContext->WaitIdle();
-    _VulkanContext->RecreateSwapchain();
-
-    // 可以在这里处理其他需要感知窗口大小变化的逻辑（如 UI 布局更新）
+    _FramebufferSize = vk::Extent2D{static_cast<std::uint32_t>(std::max(Width, 0)),
+                                    static_cast<std::uint32_t>(std::max(Height, 0))};
+    _bFramebufferResized = true;
 }
 // Application.cpp
 
@@ -3833,7 +4259,6 @@ static float g_TotalOdometer = 0.0f;
 
 void FApplication::RenderDebugUI()
 {
-    double M_PI = 3.14159265358979323846;
     // ==========================================
 // [新增] Kerr-Schild 到 Penrose 图的严格映射工具
 // ==========================================

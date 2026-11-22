@@ -40,7 +40,7 @@ float CalculateRenderedHeight(ImFont* font, const std::string& text_to_measure, 
 {
     if (!font || text_to_measure.empty()) return 0.0f;
 
-    float font_size = font->FontSize;
+    float font_size = UIContext::Get().GetFontSize(font);
     float current_h = 0.0f;
 
     const char* text_begin = text_to_measure.c_str();
@@ -78,7 +78,7 @@ float CalculateRenderedHeight(ImFont* font, const std::string& text_to_measure, 
                     float remaining_width = wrap_w - indent_width;
                     if (remaining_width <= 0) remaining_width = 1.0f;
 
-                    line_end = font->CalcWordWrapPositionA(1.0f, content_start, paragraph_end, remaining_width);
+                    line_end = font->CalcWordWrapPosition(font_size, content_start, paragraph_end, remaining_width);
                 }
                 else
                 {
@@ -228,7 +228,7 @@ ImVec2 TechText::Measure(ImVec2 available_size)
     const std::string& text_to_measure = m_current_display_text;
     if (text_to_measure.empty()) return { 0.0f, 0.0f };
 
-    float font_size = font->FontSize;
+    float font_size = UIContext::Get().GetFontSize(font);
 
     // --- 2. 确定宽度限制 (Limit Width) ---
     // 这是为了解决 "旧行为" 与 "新功能" 的核心冲突点。
@@ -317,7 +317,7 @@ void TechText::DrawTextContent(ImDrawList* dl, const std::string& text_to_draw, 
     ImFont* font = GetFont();
     if (!font) font = ImGui::GetFont();
     if (!font) return;
-    float font_size = font->FontSize;
+    float font_size = UIContext::Get().GetFontSize(font);
 
     // --- 2. 颜色计算 ---
     ImVec4 final_col_vec = m_color.Resolve();
@@ -420,7 +420,7 @@ void TechText::DrawTextContent(ImDrawList* dl, const std::string& text_to_draw, 
                     float remaining_width = wrap_width - indent_width;
                     if (remaining_width <= 0) remaining_width = 1.0f; 
                     
-                    line_end = font->CalcWordWrapPositionA(1.0f, content_start, paragraph_end, remaining_width);
+                    line_end = font->CalcWordWrapPosition(font_size, content_start, paragraph_end, remaining_width);
                 }
                 else
                 {
@@ -490,7 +490,7 @@ void TechText::Draw(ImDrawList* dl)
     if (!m_visible || m_alpha <= 0.01f) return;
 
     ImFont* font = GetFont();
-    if (font) ImGui::PushFont(font);
+    if (font) ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
 
     // 1. 判断当前是否处于滚动动画状态
     bool is_scrolling = (m_anim_mode == TechTextAnimMode::Scroll && m_scroll_progress < 1.0f);
@@ -520,7 +520,7 @@ void TechText::Draw(ImDrawList* dl)
 
         // 使用 EaseOutQuad 让运动更自然
         float t = AnimationUtils::Ease(m_scroll_progress, EasingType::EaseOutQuad);
-        float font_h = font ? font->FontSize : 13.0f;
+        float font_h = UIContext::Get().GetFontSize(font);
         float move_dist = font_h * 1.2f; // 移动距离稍微超过一个字高
 
         // 1. 绘制旧文本 (向上移动，变透明)

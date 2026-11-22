@@ -1,5 +1,6 @@
 #include "UILoader.h"
 #include <fstream>
+#include <stdexcept>
 
 
 _NPGS_BEGIN
@@ -11,10 +12,17 @@ std::shared_ptr<UIRoot> UILoader::LoadFromFile(const std::string& filepath)
     std::ifstream file(filepath);
     if (!file.is_open())
     {
-        NpgsCoreError("UILoader: Failed to open file '{}'", filepath);
-        return nullptr;
+        throw std::runtime_error("UILoader: cannot open UI asset '" + filepath + "'");
     }
-    json data = json::parse(file);
+    json data;
+    try
+    {
+        data = json::parse(file);
+    }
+    catch (const json::exception& Error)
+    {
+        throw std::runtime_error("UILoader: cannot parse UI asset '" + filepath + "': " + Error.what());
+    }
 
     auto root_element = ParseElement(data);
     return std::dynamic_pointer_cast<UIRoot>(root_element);

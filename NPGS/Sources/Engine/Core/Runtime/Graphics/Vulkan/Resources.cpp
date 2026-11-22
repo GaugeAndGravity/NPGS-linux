@@ -525,6 +525,21 @@ void FStagingBufferPool::ReleaseBuffer(FStagingBuffer* Buffer)
     }
 }
 
+FStagingBufferPool::FStagingBufferPool()
+{
+    FVulkanCore::GetClassInstance()->AddDestroyDeviceCallback("ReleaseStagingBuffers", [this]()
+    {
+        std::lock_guard<std::mutex> Lock(_Mutex);
+        _BusyBuffers.clear();
+        _FreeBuffers.clear();
+    });
+}
+
+FStagingBufferPool::~FStagingBufferPool()
+{
+    FVulkanCore::GetClassInstance()->RemoveDestroyDeviceCallback("ReleaseStagingBuffers");
+}
+
 FStagingBufferPool* FStagingBufferPool::GetInstance()
 {
     static FStagingBufferPool kInstance;

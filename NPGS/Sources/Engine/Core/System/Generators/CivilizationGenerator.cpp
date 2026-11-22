@@ -15,7 +15,7 @@ _GENERATOR_BEGIN
 
 FCivilizationGenerator::FCivilizationGenerator(const FCivilizationGenerationInfo& GenerationInfo)
     :
-    _RandomEngine(*GenerationInfo.SeedSequence),
+    _RandomEngine(Util::MakeRandomEngine(*GenerationInfo.SeedSequence)),
     _CommonGenerator(0.0f, 1.0f),
     _AsiFiltedProbability(static_cast<double>(GenerationInfo.bEnableAsiFilter) * 0.2),
     _DestroyedByDisasterProbability(GenerationInfo.DestroyedByDisasterProbability),

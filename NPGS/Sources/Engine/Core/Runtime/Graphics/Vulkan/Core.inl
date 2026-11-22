@@ -84,6 +84,16 @@ NPGS_INLINE void FVulkanCore::SetSurface(vk::SurfaceKHR Surface)
     _Surface = Surface;
 }
 
+NPGS_INLINE bool FVulkanCore::IsShutdown() const noexcept
+{
+    return _bShutdown;
+}
+
+NPGS_INLINE void FVulkanCore::SetFramebufferSize(vk::Extent2D Extent)
+{
+    _FramebufferSize = Extent;
+}
+
 NPGS_INLINE const std::vector<const char*>& FVulkanCore::GetInstanceLayers() const
 {
     return _InstanceLayers;

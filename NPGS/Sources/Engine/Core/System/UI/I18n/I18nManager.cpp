@@ -1,5 +1,7 @@
 #include "I18nManager.h"
 #include <fstream>
+#include <stdexcept>
+#include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
 #include "nlohmann/json.hpp" // 引入 nlohmann::json 库
 
 // 为方便使用，定义一个 using alias
@@ -54,7 +56,7 @@ I18nManager::I18nManager()
     // 默认加载第一个可用语言，或者一个固定的默认值
     if (!m_available_languages.empty())
     {
-        SetLanguage(m_available_languages[1].code);
+        SetLanguage(m_available_languages.size() > 1 ? m_available_languages[1].code : m_available_languages.front().code);
     }
     else
     {
@@ -65,9 +67,10 @@ I18nManager::I18nManager()
 void I18nManager::LoadAvailableLanguages()
 {
     m_available_languages.clear();
-    const std::string filename = "Assets/Lang/translations.json";
+    const std::string filename = Runtime::Asset::GetAssetPath("Lang/translations.json");
     std::ifstream ifs(filename);
-    if (!ifs.is_open()) return;
+    if (!ifs.is_open())
+        throw std::runtime_error("Cannot open translation asset '" + filename + "'");
 
     try
     {
@@ -88,7 +91,7 @@ void I18nManager::LoadAvailableLanguages()
     }
     catch (json::parse_error& e)
     {
-        // 处理解析错误
+        throw std::runtime_error("Cannot parse translation asset '" + filename + "': " + e.what());
     }
 }
 
@@ -153,12 +156,11 @@ void I18nManager::LoadDictionary()
 
     if (lang_code.empty()) return;
 
-    const std::string filename = "Assets/Lang/translations.json";
+    const std::string filename = Runtime::Asset::GetAssetPath("Lang/translations.json");
     std::ifstream ifs(filename);
     if (!ifs.is_open())
     {
-        m_dictionary["error.loading"] = "Failed to load " + filename;
-        return;
+        throw std::runtime_error("Cannot open translation asset '" + filename + "'");
     }
 
     try
@@ -172,10 +174,9 @@ void I18nManager::LoadDictionary()
     }
     catch (json::parse_error& e)
     {
-        m_dictionary["error.parsing"] = "JSON parse error: " + std::string(e.what());
+        throw std::runtime_error("Cannot parse translation asset '" + filename + "': " + e.what());
     }
 }
 
 _SYSTEM_END
 _NPGS_END
-

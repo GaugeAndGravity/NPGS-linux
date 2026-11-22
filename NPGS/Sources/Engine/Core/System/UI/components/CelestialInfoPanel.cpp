@@ -375,8 +375,8 @@ void CelestialInfoPanel::RefreshContent()
         for (const auto& item : group.items)
         {
             std::string key_text = item.key + ":";
-            ImVec2 key_size = target_font->CalcTextSizeA(target_font->FontSize, FLT_MAX, 0.0f, key_text.c_str());
-            ImVec2 value_size = target_font->CalcTextSizeA(target_font->FontSize, FLT_MAX, 0.0f, item.value.c_str());
+            ImVec2 key_size = target_font->CalcTextSizeA(UIContext::Get().GetFontSize(target_font), FLT_MAX, 0.0f, key_text.c_str());
+            ImVec2 value_size = target_font->CalcTextSizeA(UIContext::Get().GetFontSize(target_font), FLT_MAX, 0.0f, item.value.c_str());
 
             float required_width = key_size.x + value_size.x + hbox_padding;
 

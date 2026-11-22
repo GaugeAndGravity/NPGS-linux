@@ -17,6 +17,8 @@ inline void FShaderResourceManager::CreateBuffers(const FUniformBufferCreateInfo
                                                   const VmaAllocationCreateInfo* AllocationCreateInfo,
                                                   std::uint32_t BufferCount)
 {
+    static_assert(std::is_standard_layout_v<StructType> && std::is_trivially_copyable_v<StructType>,
+                  "Uniform buffer uploads require a standard-layout, trivially-copyable type.");
     const auto* VulkanContext = FVulkanContext::GetClassInstance();
     FUniformBufferInfo BufferInfo;
     BufferInfo.CreateInfo = BufferCreateInfo;
@@ -35,8 +37,16 @@ inline void FShaderResourceManager::CreateBuffers(const FUniformBufferCreateInfo
                             : reinterpret_cast<const std::byte*>(&Field) - reinterpret_cast<const std::byte*>(&Buffer);
 
         BufferInfo.Size += FieldInfo.Alignment;
-        BufferInfo.Fields.emplace(BufferCreateInfo.Fields[Index], std::move(FieldInfo));
+        BufferInfo.Fields.emplace(BufferCreateInfo.Fields.at(Index), std::move(FieldInfo));
     });
+
+    if (BufferCreateInfo.Usage != vk::DescriptorType::eUniformBufferDynamic)
+    {
+        // Member-size sums omit internal/tail padding, while uploads and member
+        // offsets use the actual C++ ABI. Shader-facing structs assert their
+        // offsets against std140 at the call site.
+        BufferInfo.Size = sizeof(StructType);
+    }
 
     StructType EmptyData{};
 

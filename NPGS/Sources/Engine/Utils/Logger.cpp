@@ -1,6 +1,7 @@
 #include "Logger.h"
 
-#include <spdlog/sinks/basic_file_sink.h>
+#include <mutex>
+
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 _NPGS_BEGIN
@@ -8,36 +9,25 @@ _UTIL_BEGIN
 
 void FLogger::Initialize()
 {
-    // 修改日志格式模式
-    // %^ %$ 是颜色开始和结束的标记
-    // %l 是日志级别 (TRACE, DEBUG, INFO, WARN, ERROR, CRITICAL)
-    // %T 是时间
-    // %n 是日志器名称
-    // %v 是实际的日志消息
-    spdlog::set_pattern("[%T][%^%l%$] %n: %v");
-
-#if defined(NPGS_ENABLE_CONSOLE_LOGGER)
-    _kCoreLogger   = spdlog::stdout_color_mt("NPGS");
-    _kClientLogger = spdlog::stdout_color_mt("App");
-
-    auto ConsoleSink = dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(_kCoreLogger->sinks()[0].get());
-    if (ConsoleSink)
+    static std::once_flag Initialized;
+    std::call_once(Initialized, []
     {
-        ConsoleSink->set_color(spdlog::level::trace, FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    }
+        // Console logging also works from a read-only working directory.
+        // Automatic color mode avoids escape sequences in redirected output.
+        auto ConsoleSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        ConsoleSink->set_pattern("[%T][%^%l%$] %n: %v");
+        ConsoleSink->set_color(spdlog::level::trace, "\033[34m\033[1m");
 
-    ConsoleSink = dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(_kClientLogger->sinks()[0].get());
-    if (ConsoleSink)
-    {
-        ConsoleSink->set_color(spdlog::level::trace, FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-    }
-#elif defined(NPGS_ENABLE_FILE_LOGGER)
-    _kCoreLogger   = spdlog::basic_logger_mt("NPGS", "NpgsCore.log", true);
-    _kClientLogger = spdlog::basic_logger_mt("App",  "Npgs.log",     true);
-#endif
+        auto CoreLogger = std::make_shared<spdlog::logger>("NPGS", ConsoleSink);
+        auto ClientLogger = std::make_shared<spdlog::logger>("App", ConsoleSink);
+        CoreLogger->set_level(spdlog::level::trace);
+        ClientLogger->set_level(spdlog::level::trace);
+        CoreLogger->flush_on(spdlog::level::err);
+        ClientLogger->flush_on(spdlog::level::err);
 
-    _kCoreLogger->set_level(spdlog::level::trace);
-    _kClientLogger->set_level(spdlog::level::trace);
+        _kCoreLogger = std::move(CoreLogger);
+        _kClientLogger = std::move(ClientLogger);
+    });
 }
 
 

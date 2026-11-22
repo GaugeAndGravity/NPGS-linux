@@ -304,7 +304,7 @@ void BaseTechSlider<T>::Draw(ImDrawList* dl)
 {
     if (!m_visible || m_alpha <= 0.01f) return;
     ImFont* font = GetFont();
-    if (font) ImGui::PushFont(font);
+    if (font) ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
 
     const auto& theme = UIContext::Get().m_theme;
 

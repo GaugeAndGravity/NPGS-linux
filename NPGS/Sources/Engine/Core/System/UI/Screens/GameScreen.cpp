@@ -2,6 +2,7 @@
 #include "../ScreenManager.h"
 #include "../../../../../Program/Application.h" // For context types
 #include "Engine/Core/Runtime/AssetLoaders/AssetManager.h"
+#include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
 #include "Engine/Core/Math/NumericConstants.h"
 #include "Engine/Utils/TooolfuncForStarMap.h"
 #include "Engine/Core/Runtime/Graphics/Vulkan/ShaderResourceManager.h"
@@ -75,15 +76,24 @@ void GameScreen::RegisterUIComponents()
     });
 }
 
-// 随机数生成器 (与原版保持一致)
-std::seed_seq seed{ std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() };
-Npgs::System::Generator::FStellarGenerator Gen(seed, Npgs::System::Generator::FStellarGenerator::EStellarTypeGenerationOption::kRandom);
+namespace
+{
+Npgs::System::Generator::FStellarGenerator& GetStellarGenerator()
+{
+    // Load generator assets only when generating a star, never before main().
+    static std::seed_seq seed{ std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count() };
+    static Npgs::System::Generator::FStellarGenerator Gen(
+        seed, Npgs::System::Generator::FStellarGenerator::EStellarTypeGenerationOption::kRandom);
+    return Gen;
+}
+}
 
 void GameScreen::OnEnter()
 {
     // --- 1. 从JSON加载UI骨架 ---
     UILoader loader;
-    m_ui_root = loader.LoadFromFile("Assets/UI/game_screen.json");
+    m_ui_root = loader.LoadFromFile(Runtime::Asset::GetAssetPath("UI/game_screen.json"));
 
     if (!m_ui_root)
     {
@@ -518,6 +528,7 @@ void GameScreen::SimulateStarSelectionAndUpdateUI()
 {
     if (!m_ui_root) return;
 
+    auto& Gen = GetStellarGenerator();
     Npgs::Astro::AStar myStar = Gen.GenerateStar();
     Gen.GenerateStar();
     Npgs::System::UI::CelestialData ui_data = Npgs::System::UI::AstroDataBuilder::BuildDataForObject(&myStar);

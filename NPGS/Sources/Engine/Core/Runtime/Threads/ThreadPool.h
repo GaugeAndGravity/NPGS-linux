@@ -25,7 +25,6 @@ public:
     auto Submit(Func&& Pred, Args&&... Params);
 
     void Terminate();
-    void ChangeHyperThread();
     int GetMaxThreadCount() const;
 
     static FThreadPool* GetInstance();
@@ -39,17 +38,12 @@ private:
     FThreadPool& operator=(const FThreadPool&) = delete;
     FThreadPool& operator=(FThreadPool&&)      = delete;
 
-    void SetThreadAffinity(std::thread& Thread, std::size_t CoreId) const;
-
-private:
     std::vector<std::thread>          _Threads;
     std::queue<std::function<void()>> _Tasks;
     std::mutex                        _Mutex;
     std::condition_variable           _Condition;
     bool                              _Terminate;
     int                               _kMaxThreadCount;
-    int                               _kPhysicalCoreCount;
-    int                               _kHyperThreadIndex;
 };
 
 template <typename DataType, typename ResultType>

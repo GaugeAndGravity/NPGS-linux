@@ -351,7 +351,7 @@ void UIElement::Draw(ImDrawList* draw_list)
     // 设置字体
     ImFont* font = GetFont();
     bool font_pushed = (font != nullptr);
-    if (font_pushed) ImGui::PushFont(font);
+    if (font_pushed) ImGui::PushFont(font, UIContext::Get().GetFontBaseSize(font));
 
     // 递归绘制子元素
     for (auto& child : m_children)

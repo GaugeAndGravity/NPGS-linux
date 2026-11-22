@@ -130,8 +130,12 @@ vec3 GaussBlur(vec2 FragUv, bool bHorizontal)
 
 void main()
 {
-    vec2 TexelCoord = gl_GlobalInvocationID.xy;
-    vec2 FragUv     = (TexelCoord.xy + 0.5) / iResolution;
+    ivec2 TexelCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(TexelCoord, imageSize(iStorageImage))))
+    {
+        return;
+    }
+    vec2 FragUv     = (vec2(TexelCoord) + 0.5) / iResolution;
     vec4 FragColor  = vec4(1.0);
 
 #if defined(GENERATE_MIPMAP)
@@ -140,5 +144,5 @@ void main()
     FragColor = vec4(GaussBlur(FragUv, ibHorizontal), 1.0);
 #endif
 
-    imageStore(iStorageImage, ivec2(TexelCoord), FragColor);
+    imageStore(iStorageImage, TexelCoord, FragColor);
 }

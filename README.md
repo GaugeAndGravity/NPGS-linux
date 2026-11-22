@@ -1,39 +1,45 @@
-大概是世界上最好的最大延拓kn时空渲染着色器，在NPGS/Sources/Engine/Shaders/BlackHole_common.glsl
-（下面的介绍是我直接从自己的shadertoy搬过来的）
-本Shader实现了基于物理的克尔-纽曼时空（带电旋转黑洞）光线追踪。
-This shader implements physically based ray-tracing in Kerr-Newman spacetime(charged rotating black hole).
+# NPGS
 
-实现了完整的时空拓扑：外视界、内视界、内外能层、奇环，以及反宇宙。
-Implements complete spacetime topology: outer/inner event horizons,
-outer/inner ergospheres, ringularity, and the antiverse.
+[NPGS](https://github.com/baopinshui/NPGS) 是使用 Vulkan 与 GLSL 的天体模拟和黑洞可视化项目。本分支面向 Linux 原生 Wayland 桌面，使用 CMake + Ninja 构建。
 
-实现了完整的克尔-纽曼时空最大延拓解。光线可以穿过内视界进入
-全新的时空域（白洞区域），并最终抵达另一个宇宙。
-Implements the complete maximal extension of Kerr-Newman spacetime. 
-Rays can traverse the inner horizon into new spacetime domains (white hole regions) 
-and eventually emerge into another  universe.
+## 核心能力
 
-实现了基于物理的偏振（极化）模拟。通过在弯曲时空中计算
-Walker-Penrose常数，精确模拟吸积盘发光在强引力场下的偏振态演化。
-Implements physically-based polarization simulation. By calculating 
-Walker-Penrose constants in curved spacetime, it accurately simulates the 
-evolution of polarization states from the accretion disk under strong gravity.
+- 克尔–纽曼时空光线追踪：旋转带电黑洞、内外视界、能层、奇环与最大延拓。
+- 吸积盘、相对论喷流、引力透镜、多普勒频移、引力红移与热浪折射。
+- 基于 Walker–Penrose 常数的偏振态演化。
+- 绕转、自由与测地线相机，以及可交互的参数界面。
 
-支持裸奇点。支持切换静态观者、自由落体观者以及自定义坐标速度观者。
-Supports naked singularities. Supports Static, Free-falling, and Custom-velocity observers.
+## 环境
 
-完全拟真广义相对论效应，包含吸积盘、相对论喷流、引力透镜、
-多普勒频移、引力红移以及热浪折射。
-Fully simulates GR effects: accretion disk, relativistic jets, gravitational
-lensing, Doppler shift, gravitational redshift, and heat haze refraction.
+- Linux、Wayland 会话、支持 Wayland 的 GLFW ≥ 3.4。
+- Vulkan ≥ 1.4；同一队列族提供 graphics、compute 与 present。
+- SDR surface：`R8G8B8A8_UNORM` 或 `B8G8R8A8_UNORM`，搭配 `SRGB_NONLINEAR`。
+- CMake ≥ 3.28、Ninja、C++23 编译器与标准库、Vulkan 着色器工具。
+- Fontconfig 与覆盖所用语言的系统字体，中文推荐 Noto CJK。
 
+完整依赖及 Gentoo 安装命令见[构建与安装](doc/build.md)。
 
-完整可运行的在x64里那个压缩包
+## 快速开始
 
+在仓库根目录执行：
 
+```sh
+cmake --preset linux-release
+cmake --build --preset linux-release
+./build/release/bin/npgs
+```
 
-操作：首先shift关输入法（笑
-然后，绕转模式下wasd是横向和纵向环绕，鼠标拖动也是。
-此外，绕转模式下鼠标右键拖动是偏头，中键回正（只在绕转模式）
-自由模式下ws前后   ad左右  rf上下   qe滚转   鼠标转视角 T切换模式 G使得相机沿测地线移动 H隐藏ui o……（）
-第三个左侧按钮可以输指令，tp，格式是/tp x y z t ux uy uz
+程序默认窗口请求为 1280×960。在主菜单选择“新的模拟”→“开始模拟”进入界面；可用 `T` 切换绕转与自由相机，按 `Esc` 退出。
+
+吸积盘切换与显示参数见[使用指南](doc/usage.md#吸积盘与参数)。
+
+## 文档
+
+- [构建与安装](doc/build.md)：Gentoo 依赖、CMake presets、用户目录安装。
+- [使用指南](doc/usage.md)：启动参数、菜单、键鼠操作、字体和资源路径。
+- [资源与许可证](doc/licensing.md)：代码许可证、第三方资产与打包要求。
+- [开发与测试](doc-dev/development.md)：源码结构、着色器构建、资源布局和测试维护。
+
+## 许可证
+
+代码许可证见 [GNU GPL v3](LICENSE)。第三方资产适用各自许可，分发前请查阅[资源与许可证](doc/licensing.md)。
