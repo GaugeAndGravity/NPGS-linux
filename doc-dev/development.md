@@ -87,6 +87,7 @@ share/npgs/Assets/
 
 | 测试 | 关注点 |
 | --- | --- |
+| `npgs-scroll` | 滚轮百分比设置、分数输入、正反向倍率、禁用调整与相机模式 |
 | `npgs-imgui-fonts` | 字体选择、动态字形、字号 / framebuffer scale、纹理协议与容量检查 |
 | `npgs-imgui-cjk` | 系统 CJK 字体覆盖；缺少相应字体时报告跳过 |
 | `npgs-resource-layout` | manifest、必需文件与资源布局 |

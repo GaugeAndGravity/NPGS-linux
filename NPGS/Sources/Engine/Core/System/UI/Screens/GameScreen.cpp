@@ -118,6 +118,11 @@ void GameScreen::OnEnter()
         };
 
         // 添加滑块 (动态数据绑定)
+        auto scrollStep = menu->AddLinear("i18ntext.ui.controls.scroll_step",
+            &m_context.ScrollSettings->StepPercent,
+            FScrollSettings::kMinStepPercent, FScrollSettings::kMaxStepPercent);
+        scrollStep->SetName("scrollStepPercent");
+        scrollStep->SetTooltip("i18ntext.tooltip.scroll_step");
         menu->AddLinear("R", &ctx.m_theme.color_accent.x, 0.0f, 1.0f);
         menu->AddLinear("G", &ctx.m_theme.color_accent.y, 0.0f, 1.0f);
         menu->AddLinear("B", &ctx.m_theme.color_accent.z, 0.0f, 1.0f);

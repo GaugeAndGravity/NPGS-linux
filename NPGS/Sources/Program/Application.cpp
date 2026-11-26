@@ -1829,7 +1829,7 @@ std::uint64_t FApplication::ExecuteMainRender(std::uint64_t maxFrames, bool smok
     _VulkanContext->RegisterAutoRemovedCallbacks(Grt::FVulkanContext::ECallbackType::kCreateSwapchain, "InitHistoryFrame", InitHistoryFrame);
 
     // UI Init (保持不变)
-    System::UI::AppContext appContext{ .Application = this, .UIRenderer = _uiRenderer.get(), .GameArgs = &GameArgs, .BlackHoleArgs = &BlackHoleArgs, .GameTime = &GameTime, .TimeRate = &TimeRate, .RealityTime = &RealityTime, .RKKVID = RKKVID, .stage0ID = stage0ID, .stage1ID = stage1ID, .stage2ID = stage2ID, .stage3ID = stage3ID, .stage4ID = stage4ID };
+    System::UI::AppContext appContext{ .Application = this, .UIRenderer = _uiRenderer.get(), .GameArgs = &GameArgs, .BlackHoleArgs = &BlackHoleArgs, .GameTime = &GameTime, .TimeRate = &TimeRate, .RealityTime = &RealityTime, .ScrollSettings = &_ScrollSettings, .RKKVID = RKKVID, .stage0ID = stage0ID, .stage1ID = stage1ID, .stage2ID = stage2ID, .stage3ID = stage3ID, .stage4ID = stage4ID };
     m_screen_manager = std::make_unique<System::UI::ScreenManager>();
     m_screen_manager->RegisterScreen("Game", std::make_shared<System::UI::GameScreen>(appContext));
     m_screen_manager->RegisterScreen("MainMenu", std::make_shared<System::UI::MainMenuScreen>(appContext));
@@ -3935,30 +3935,21 @@ void FApplication::ProcessInput()
     wasLeftDown = isLeftDown;
     wasRightDown = isRightDown;
 
-    // -----------------------------------------------------------
-    // 6. 处理滚轮缩放 (消费 Buffer)
-    // -----------------------------------------------------------
-    // -----------------------------------------------------------
-    // 6. 处理滚轮缩放 / 推力控制 (消费 Buffer)
-    // -----------------------------------------------------------
-    // [新增] 用于持久化存储测地模式下的推力大小，初始设为 1.5
-
-
+    // 6. 处理滚轮半径 / 速度 / 推力控制 (消费 Buffer)
     if (_buffered_scroll_y != 0.0f)
     {
         if (!bMouseBlocked)
         {
+            const double ScrollScale = _ScrollSettings.GetScale(_buffered_scroll_y);
             if (g_GeodesicMode)
             {
-                // 测地模式：滚轮控制推力（指数增减，每次滚动改变 20%），体验更平滑
-                s_GeodesicThrust *= std::pow(1.2f, _buffered_scroll_y);
+                s_GeodesicThrust *= ScrollScale;
 
                 std::cout << "[Geodesic Mode] Thrust power adjusted to: " << s_GeodesicThrust << std::endl;
             }
             else
             {
-                // 普通模式：滚轮控制相机缩放 (FOV)
-                _FreeCamera->ProcessMouseScroll(_buffered_scroll_y);
+                _FreeCamera->ApplyScrollScale(ScrollScale);
             }
         }
         _buffered_scroll_y = 0.0f;

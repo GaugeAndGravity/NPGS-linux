@@ -277,6 +277,14 @@
                 },
                 { "type": "TechDivider" },
                 {
+                  "type": "VBox",
+                  "name": "settingsContent",
+                  "properties": {
+                    "height": { "type": "Content" },
+                    "padding": 10.0
+                  }
+                },
+                {
                   "type": "TechButton",
                   "properties": {
                     "sourceText": "i18ntext.ui.main_menu.common_back",

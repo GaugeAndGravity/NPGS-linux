@@ -2,6 +2,7 @@
 #include "imgui.h" // For ImTextureID
 
 #include "../../../../Program/DataStructures.h"
+#include "../ScrollSettings.h"
 // 前置声明以避免包含完整的头文件，降低编译依赖
 namespace Npgs { class FApplication; };
 namespace Npgs { namespace Runtime { namespace Graphics { class FVulkanUIRenderer; } } }
@@ -22,6 +23,7 @@ struct AppContext
     double* GameTime;
     double* TimeRate;
     double* RealityTime; // 有些UI逻辑（如电影感面板）可能需要真实时间
+    FScrollSettings* ScrollSettings;
 
     // 共享资源 (由Application在启动时填充)
     ImTextureID RKKVID;

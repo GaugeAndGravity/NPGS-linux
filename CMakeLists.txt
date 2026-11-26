@@ -127,6 +127,13 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     if(NPGS_BUILD_APPLICATION)
+        add_executable(npgs-scroll-test tests/test_scroll.cpp
+            NPGS/Sources/Engine/Core/System/Spatial/Camera.cpp)
+        target_include_directories(npgs-scroll-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/NPGS/Sources")
+        target_link_libraries(npgs-scroll-test PRIVATE glm::glm)
+        add_test(NAME npgs-scroll COMMAND npgs-scroll-test)
+        set_tests_properties(npgs-scroll PROPERTIES LABELS "cpu;input" TIMEOUT 30)
+
         add_executable(npgs-imgui-font-test tests/test_imgui_fonts.cpp
             NPGS/Sources/Engine/Core/System/UI/SystemFonts.cpp)
         target_include_directories(npgs-imgui-font-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/NPGS/Sources")

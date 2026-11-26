@@ -6,17 +6,15 @@ _NPGS_BEGIN
 _SYSTEM_BEGIN
 _SPATIAL_BEGIN
 
-NPGS_INLINE void FCamera::ProcessMouseScroll(double OffsetY)
+NPGS_INLINE void FCamera::ApplyScrollScale(double Scale)
 {
     if (!_bIsOrbiting)
     {
-        _Speed *= pow(1.2, OffsetY);
-
+        _Speed *= Scale;
     }
     else
     {
-        _ObjectivetTargetDistanceToOrbitalCenter *= pow(1.2,-OffsetY);
-       
+        _ObjectivetTargetDistanceToOrbitalCenter /= Scale;
     }
 }
 

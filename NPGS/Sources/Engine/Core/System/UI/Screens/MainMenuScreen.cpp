@@ -3,6 +3,7 @@
 #include "../../../../../Program/Application.h"
 #include "../UILoader.h"
 #include "../UIFactory.h"
+#include "../components/TechSliders.h"
 #include "Engine/Core/Runtime/AssetLoaders/GetAssetFullPath.h"
 
 _NPGS_BEGIN
@@ -74,6 +75,13 @@ void MainMenuScreen::OnEnter()
     m_mainLevelPanel = m_ui_root->FindElementByID("mainMenuRoot.mainLevelPanel")->shared_from_this();
     m_newGamePanel = m_ui_root->FindElementByID("mainMenuRoot.newGamePanel")->shared_from_this();
     m_settingsPanel = m_ui_root->FindElementByID("mainMenuRoot.settingsPanel")->shared_from_this();
+
+    auto scrollStep = std::make_shared<LinearTechSlider<float>>(
+        "i18ntext.ui.controls.scroll_step", &m_context.ScrollSettings->StepPercent,
+        FScrollSettings::kMinStepPercent, FScrollSettings::kMaxStepPercent);
+    scrollStep->SetName("scrollStepPercent");
+    scrollStep->SetTooltip("i18ntext.tooltip.scroll_step");
+    m_ui_root->FindElementByID("mainMenuRoot.settingsPanel.settingsContent")->AddChild(scrollStep);
 
     m_btnModeGod = std::static_pointer_cast<TechButton>(m_ui_root->FindElementAs<TechButton>("mainMenuRoot.newGamePanel.btnModeGod")->shared_from_this());
     m_btnModeEvo = std::static_pointer_cast<TechButton>(m_ui_root->FindElementAs<TechButton>("mainMenuRoot.newGamePanel.btnModeEvo")->shared_from_this());

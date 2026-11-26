@@ -31,12 +31,13 @@ public:
 
     // API 保持不变，用于动态添加滑块 (现在会自动添加到设置页面的容器中)
     template<typename T>
-    void AddLinear(const std::string& name, T* ptr, T min, T max)
+    std::shared_ptr<LinearTechSlider<T>> AddLinear(const std::string& name, T* ptr, T min, T max)
     {
         // 确保添加到设置页面的滚动视图容器中
         auto slider = std::make_shared<LinearTechSlider<T>>(name, ptr, min, max);
         slider->SetName(name);
         m_settings_content_box->AddChild(slider);
+        return slider;
     }
 
     template<typename T>

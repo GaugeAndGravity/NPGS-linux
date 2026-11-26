@@ -46,7 +46,7 @@ public:
 
     void ProcessKeyboard(EMovement Direction);
     void ProcessMouseMovement(double OffsetX, double OffsetY);
-    void ProcessMouseScroll(double OffsetY);
+    void ApplyScrollScale(double Scale);
     void ProcessOrbital(double OffsetX, double OffsetY);
     void ProcessTimeEvolution(double DeltaTime);
     void ProcessModeChange();
