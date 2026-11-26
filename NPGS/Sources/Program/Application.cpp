@@ -3558,7 +3558,7 @@ bool FApplication::InitializeWindow()
         logicalWidth, logicalHeight, framebufferWidth, framebufferHeight,
         _FramebufferSize.width, _FramebufferSize.height, scaleX, scaleY, _WindowSize.width, _WindowSize.height);
 
-    _FreeCamera = std::make_unique<SysSpa::FCamera>(glm::vec3(0.0f, 0.0f, 0.0f), 0.2, 2.5, cfov);
+    _FreeCamera = std::make_unique<SysSpa::FCamera>(glm::vec3(0.0f, 0.0f, 0.0f), 0.2, SysSpa::kSpeed, cfov);
     _FreeCamera->SetCameraMode(true);
     return true;
 }
